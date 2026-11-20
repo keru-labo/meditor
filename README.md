@@ -24,7 +24,7 @@ cargo build --manifest-path rust/Cargo.toml --locked --release
 
 ### Linux での開発時の検証
 
-Debian 13 系では `build-essential pkg-config libclang-dev libfontconfig-dev libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libsdl2-dev ffmpeg` を導入します。仮想画面での描画テストには `xvfb xauth fonts-noto-cjk` を使います。Linux ではファイル選択に XDG Desktop Portal が必要です。
+Debian 13 系では `build-essential pkg-config libclang-dev libfontconfig-dev libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libsdl2-dev ffmpeg` を導入します。仮想画面での描画テストには `xvfb xauth libxkbcommon-x11-0 fonts-noto-cjk` を使います。Linux ではファイル選択に XDG Desktop Portal が必要です。
 
 ```sh
 cargo test --manifest-path rust/Cargo.toml --locked
