@@ -26,54 +26,41 @@ jobs:
   windows:
     name: Windows tests and screenshot
     runs-on: windows-2022
-    timeout-minutes: 75
-    env:
-      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\.vcpkg-cache
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: msys2 {0}
     steps:
       - uses: actions/checkout@v4
-      - name: Restore vcpkg binary cache
-        uses: actions/cache@v4
+      - name: Install native Windows dependencies
+        uses: msys2/setup-msys2@v2
         with:
-          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
-          key: meditor-vcpkg-windows-2022-${{ hashFiles('vcpkg.json', 'tools/vcpkg/*.cmake') }}
-          restore-keys: meditor-vcpkg-windows-2022-
-      - name: Prepare dependencies
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
-          if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
-            choco install ffmpeg -y --no-progress
-            if ($LASTEXITCODE -ne 0) { throw "FFmpeg installation failed" }
-          }
-          ffmpeg -version
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-pkgconf
+            mingw-w64-ucrt-x86_64-ffmpeg
+            mingw-w64-ucrt-x86_64-nlohmann-json
+            mingw-w64-ucrt-x86_64-SDL2
+            mingw-w64-ucrt-x86_64-wxwidgets3.2-msw
       - name: Configure and build Release
-        shell: pwsh
         run: |
-          $toolchain = Join-Path $env:VCPKG_INSTALLATION_ROOT 'scripts/buildsystems/vcpkg.cmake'
-          cmake -S . -B build -A x64 "-DCMAKE_TOOLCHAIN_FILE=$toolchain" `
-            "-DVCPKG_OVERLAY_TRIPLETS=$PWD/tools/vcpkg" `
-            -DVCPKG_TARGET_TRIPLET=x64-windows-release -DMEDITOR_TEST_MEDIA=ON
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cmake --build build --config Release --parallel 2
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DMEDITOR_TEST_MEDIA=ON
+          cmake --build build --parallel 2
       - name: Run CTest
-        run: ctest --test-dir build -C Release --output-on-failure
+        run: ctest --test-dir build --output-on-failure
       - name: Capture the editor with the 10,000-caption fixture
-        shell: pwsh
         env:
           SDL_AUDIODRIVER: dummy
         run: |
-          $png = Join-Path $env:RUNNER_TEMP 'meditor-windows.png'
-          Remove-Item -LiteralPath $png -ErrorAction SilentlyContinue
-          $fixture = Join-Path $PWD 'build/media-fixture/fixture.json'
-          $editor = Start-Process -FilePath 'build/Release/meditor.exe' -PassThru -NoNewWindow `
-            -ArgumentList ('--smoke-test "{0}" "{1}"' -f $fixture, $png)
-          if (-not $editor.WaitForExit(30000)) {
-            $editor.Kill()
-            throw "The editor did not draw and capture the fixture within 30 seconds."
-          }
-          if ($editor.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $png -PathType Leaf)) {
-            throw "The editor failed to produce a screenshot (exit $($editor.ExitCode))."
-          }
+          png="$(cygpath -u "$RUNNER_TEMP")/meditor-windows.png"
+          rm -f "$png"
+          timeout --foreground --kill-after=5s 30s ./build/meditor.exe --smoke-test \
+            build/media-fixture/fixture.json "$png"
+          test -s "$png"
       - name: Upload Windows screenshot
         id: screenshot
         uses: actions/upload-artifact@v4

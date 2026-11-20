@@ -83,7 +83,8 @@ bool saveWindowsScreenshot(wxWindow& window, const wxString& destination)
         GdiFlush();
         return copied && showsSyntheticPreview(pixels, width, height);
     };
-    if (!print(PW_RENDERFULLCONTENT) && !print(0))
+    constexpr UINT renderFullContent = 0x00000002; // PW_RENDERFULLCONTENT
+    if (!print(renderFullContent) && !print(0))
         return false;
 
     wxImage image(width, height, false);
