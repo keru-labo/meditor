@@ -38,6 +38,21 @@ ctest --test-dir build --output-on-failure
 
 Windows CI でビルドと機能テストを確認しています。Linux CI は開発時の回帰検出に使い、Windows 実機での性能計測は今後の検証項目です。
 
+### Rust の再生制御
+
+Rust 版の最初のクレートはシーク要求と結果の受理を担当します。Rust stable で次を実行できます。GUI とメディアを使うプレビュー版は上記のビルド手順で起動します。[技術選定と移行の ADR](docs/adr/0001-rust-windows-editor.md)
+
+```powershell
+cargo test --locked --manifest-path rust/Cargo.toml
+```
+
+行カバレッジ85%以上とミューテーションテストの確認には、`cargo-llvm-cov`、`llvm-tools-preview`、`cargo-mutants` を使います。`rust` ディレクトリで実行します。
+
+```powershell
+cargo llvm-cov --locked --fail-under-lines 85
+cargo mutants --output target -- --locked
+```
+
 ## 素材を開く
 
 1. **ファイル → 新規プロジェクト** から元動画、ゲーム音と話者の WAV、保存先を選びます。音声は各トラックをステレオ 48 kHz PCM s16le に準備します。動画内の音声は WAV として抽出して追加します。
