@@ -14,6 +14,6 @@
 
 ## PR で Windows の画面を確認する
 
-PR の **Checks → Windows tests and screenshot → Details** からジョブを開きます。実行の **Summary** にある **Download meditor-windows.png (ZIP)** から撮影結果を取得できます。同じファイルは **Artifacts → meditor-windows-screenshot** にもあり、14日間保存します。
+同じリポジトリのブランチから作成した PR では、CI が **Windows プレビュー** コメントに PNG を直接表示します。再実行すると同じコメントが更新されます。PNG はコメントから表示できるよう、専用の `ci/screenshots/pr-番号` ブランチに保存します。フォークからの PR では画像投稿用の書き込み権限がないため、**Checks → Windows tests and screenshot → Details** から実行を開き、Artifacts の画像を確認できます。
 
 Windows ジョブは MSYS2 UCRT64 のビルド済みライブラリを使用して Release をビルドし、CTest を実行後、合成動画と10,000件の字幕を読み込んだエディターのウィンドウを撮影します。プレビュー領域に合成動画が描画されたことを判定し、画面を保存できなかった場合はジョブを失敗させます。音声テストはダミーデバイスで実行します。
