@@ -1,0 +1,39 @@
+name: Z3 timeline model
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/z3.yml'
+      - 'verification/z3/**'
+      - 'rust/src/main.rs'
+      - 'rust/src/project.rs'
+      - 'rust/src/video.rs'
+      - 'rust/ui/editor.slint'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/z3.yml'
+      - 'verification/z3/**'
+      - 'rust/src/main.rs'
+      - 'rust/src/project.rs'
+      - 'rust/src/video.rs'
+      - 'rust/ui/editor.slint'
+
+permissions:
+  contents: read
+
+jobs:
+  timeline:
+    name: Check timeline model
+    runs-on: ubuntu-24.04
+    container: debian:trixie@sha256:9c6e381421d0f48d1b8133e573f33c185ee16cbf505eda9c4a8a4791b25ea8a6
+    timeout-minutes: 5
+    steps:
+      - name: Install pinned Z3
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates git z3=4.13.3-1
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - run: sh verification/z3/check.sh
