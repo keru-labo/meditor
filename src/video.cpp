@@ -39,6 +39,8 @@ struct Decoder {
     Time origin = 0;
     Time duration = 0;
     Time lastRequest = -1;
+    std::optional<Time> lastSourceEnd;
+    bool reachedEnd = false;
     bool eof = false;
     std::shared_ptr<const VideoFrame> shown;
 
@@ -143,27 +145,39 @@ struct Decoder {
         return frame;
     }
 
-    std::shared_ptr<const VideoFrame> at(Time target, const auto& cancelled)
+    std::shared_ptr<const VideoFrame> at(Time target, std::optional<Time> sourceEnd, const auto& cancelled)
     {
-        target = std::clamp(target, Time{0}, duration - 1);
-        if (lastRequest < 0 || target < lastRequest || target - lastRequest > 300'000) {
-            const auto timestamp = origin + av_rescale_q(target, AV_TIME_BASE_Q, timeBase);
+        const Time limit = std::min(duration, sourceEnd.value_or(duration));
+        if (limit <= 0)
+            return {};
+        target = std::clamp(target, Time{0}, limit - 1);
+        if (lastRequest < 0 || sourceEnd != lastSourceEnd || target < lastRequest || target - lastRequest > 300'000) {
+            const auto ticks = sourceEnd
+                ? av_rescale_q_rnd(target, AV_TIME_BASE_Q, timeBase, AV_ROUND_DOWN)
+                : av_rescale_q(target, AV_TIME_BASE_Q, timeBase);
+            const auto timestamp = origin + ticks;
             check(av_seek_frame(format, stream, timestamp, AVSEEK_FLAG_BACKWARD), "Seek video");
             avcodec_flush_buffers(codec);
             av_frame_unref(decoded);
             av_frame_unref(previous);
             shown.reset();
+            reachedEnd = false;
             eof = false;
         }
         lastRequest = target;
+        lastSourceEnd = sourceEnd;
         if (shown && shown->pts >= target)
             return shown;
 
-        while (!cancelled() && decodeOne()) {
+        while (!cancelled() && !reachedEnd && decodeOne()) {
             const auto timestamp = decoded->best_effort_timestamp;
             if (timestamp == AV_NOPTS_VALUE)
                 continue;
             const auto pts = av_rescale_q(timestamp - origin, timeBase, AV_TIME_BASE_Q);
+            if (sourceEnd && pts >= limit) {
+                reachedEnd = true;
+                break;
+            }
             if (pts >= target) {
                 shown = convert(*decoded, pts);
                 return shown;
@@ -214,7 +228,7 @@ struct VideoWorker::State {
                     proxy = std::move(candidate);
                 }
                 auto& decoder = request.proxy ? *proxy : original;
-                result.frame = decoder.at(request.target, cancelled);
+                result.frame = decoder.at(request.target, request.sourceEnd, cancelled);
                 if (!result.frame && !cancelled())
                     result.error = "No frame found at the requested time";
             } catch (const std::exception& error) {

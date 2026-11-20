@@ -40,6 +40,31 @@ int main()
         loaded.save(file);
         expect(Project::load(file).captions[5000].text == loaded.captions[5000].text,
                "round-trip Japanese edit and replace existing project");
+        expect(!loaded.clip && loaded.playbackRange(90 * second) == ClipRange{0, 90 * second},
+               "Legacy version 1 projects use the entire source");
+        const ClipRange chosen{30 * second, 40 * second};
+        expect(loaded.setClip(chosen, 90 * second) && loaded.clip == chosen,
+               "Apply one valid source interval");
+        expect(loaded.playbackRange(90 * second).duration() == 10 * second,
+               "The clip starts at timeline zero and determines timeline duration");
+
+        const ClipRange trimmed{32 * second, 40 * second};
+        expect(loaded.setClip(trimmed, 90 * second), "Trim the beginning of the applied clip");
+        for (const ClipRange invalid : {ClipRange{-second, 40 * second},
+                                        ClipRange{32 * second, 91 * second},
+                                        ClipRange{40 * second, 40 * second},
+                                        ClipRange{32 * second, 31 * second}}) {
+            expect(!loaded.setClip(invalid, 90 * second) && loaded.clip == trimmed,
+                   "Invalid trim retains the previously applied range");
+        }
+        loaded.save(file);
+        const auto reopened = Project::load(file);
+        expect(reopened.clip == trimmed && reopened.playbackRange(90 * second).duration() == 8 * second,
+               "Reopen the edited clip");
+        expect(reopened.audio[1].offset == loaded.audio[1].offset &&
+               reopened.captions[5000].text == loaded.captions[5000].text,
+               "Saving a clip retains existing audio settings and subtitle edits");
+
         loaded.captions[2].id = loaded.captions[1].id;
         loaded.save(file);
         bool rejected = false;

@@ -23,6 +23,10 @@ constexpr int blockFrames = 1024;
 constexpr int frameBytes = channels * sizeof(std::int16_t);
 
 Time toFrames(Time time) { return time * sampleRate / second; }
+
+// For a half-open playback interval, include sample timestamps at or after the
+// start and stop before any sample timestamp at or after the end.
+Time firstFrameAtOrAfter(Time time) { return (time * sampleRate + second - 1) / second; }
 Time toTime(Time frames) { return frames * second / sampleRate; }
 
 unsigned le16(const unsigned char* bytes)
@@ -119,7 +123,7 @@ struct AudioMixer::State {
     std::jthread worker;
 
     State(const std::vector<Track>& source, Time duration)
-        : silent(source.empty()), duration(duration), end(toFrames(duration))
+        : silent(source.empty()), duration(duration), end(firstFrameAtOrAfter(duration))
     {
         if (silent)
             return;
@@ -266,7 +270,7 @@ void AudioMixer::start(Time position)
         return;
     }
     ++state_->epoch;
-    state_->written = std::clamp(toFrames(position), Time{0}, state_->end);
+    state_->written = firstFrameAtOrAfter(std::clamp(position, Time{0}, state_->duration));
     state_->error.clear();
     state_->active = true;
     state_->preroll = true;

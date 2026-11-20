@@ -45,13 +45,27 @@ static std::string writePath(const fs::path& path, const fs::path& directory)
     return utf8(relative.empty() ? path : relative);
 }
 
+bool ClipRange::validFor(Time sourceDuration) const
+{
+    return start >= 0 && start < end && end <= sourceDuration && end <= maximumDuration;
+}
+
+bool Project::setClip(ClipRange range, Time sourceDuration)
+{
+    if (!range.validFor(sourceDuration))
+        return false;
+    clip = range;
+    return true;
+}
+
 Project Project::load(const fs::path& file)
 {
     std::ifstream stream(file, std::ios::binary);
     if (!stream)
         throw std::runtime_error("Could not open project");
     const auto data = json::parse(stream);
-    if (data.at("version") != 1)
+    const auto& version = data.at("version");
+    if (version != 1 && version != 2)
         throw std::runtime_error("Unsupported project version");
 
     const auto directory = fs::absolute(file).parent_path();
@@ -60,6 +74,17 @@ Project Project::load(const fs::path& file)
     project.proxy = readPath(data.value("proxy", std::string{}), directory);
     if (project.video.empty())
         throw std::runtime_error("Project requires a video");
+    if (version == 2) {
+        const auto& range = data.at("clip");
+        const auto& start = range.at("source_start_us");
+        const auto& end = range.at("source_end_us");
+        const auto validTimestamp = [](const json& value) {
+            return value.is_number_integer() && value >= 0 && value <= maximumDuration;
+        };
+        if (!validTimestamp(start) || !validTimestamp(end) ||
+            !project.setClip({start.get<Time>(), end.get<Time>()}, maximumDuration))
+            throw std::runtime_error("Invalid clip interval");
+    }
 
     const auto& audio = data.at("audio");
     if (!audio.is_array() || audio.size() > 32)
@@ -95,9 +120,14 @@ Project Project::load(const fs::path& file)
 void Project::save(const fs::path& file) const
 {
     const auto directory = fs::absolute(file).parent_path();
-    json data{{"version", 1}, {"video", writePath(video, directory)},
+    json data{{"version", clip ? 2 : 1}, {"video", writePath(video, directory)},
               {"proxy", writePath(proxy, directory)}, {"audio", json::array()},
               {"captions", json::array()}};
+    if (clip) {
+        if (!clip->validFor(maximumDuration))
+            throw std::runtime_error("Invalid clip interval");
+        data["clip"] = {{"source_start_us", clip->start}, {"source_end_us", clip->end}};
+    }
     for (const auto& track : audio)
         data["audio"].push_back({{"path", writePath(track.path, directory)}, {"name", track.name},
                                  {"offset_us", track.offset}, {"gain", track.gain}});
