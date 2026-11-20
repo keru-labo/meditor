@@ -11,3 +11,9 @@
 | 元動画を再生している | タイムラインを往復し、別の位置で手を離す | 元動画に戻り、複数音声と一緒に再開する | GUI 実機 |
 
 同じ Windows PC での再現方法は [性能計測](performance.md) を参照。
+
+## PR で Windows の画面を確認する
+
+PR の **Checks → Windows tests and screenshot → Details** からジョブを開きます。実行の **Summary** にある **Download meditor-windows.png (ZIP)** から撮影結果を取得できます。同じファイルは **Artifacts → meditor-windows-screenshot** にもあり、14日間保存します。
+
+Windows ジョブは Release をビルドし、CTest を実行後、合成動画と10,000件の字幕を読み込んだエディターのウィンドウを撮影します。プレビュー領域に合成動画が描画されたことを判定し、画面を保存できなかった場合はジョブを失敗させます。音声テストはダミーデバイスで実行します。
