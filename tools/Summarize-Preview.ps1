@@ -28,10 +28,13 @@ foreach ($file in $Path) {
         ForEach-Object { $_.us })
     $resume = @($report.events | Where-Object { $_.event -eq 'resume_paint' } |
         ForEach-Object { [Math]::Abs([long]$_.video_pts_us - [long]$_.audio_queue_position_us) })
+    $resumeSubmit = @($report.events | Where-Object { $_.event -eq 'resume_frame_submit' } |
+        ForEach-Object { [Math]::Abs([long]$_.video_pts_us - [long]$_.audio_requested_position_us) })
     foreach ($proxy in @($false, $true)) {
         $inputs = @($report.events | Where-Object { $_.event -eq 'scrub_input' -and $_.proxy -eq $proxy })
         if ($inputs.Count -eq 0) { continue }
         $paints = @($report.events | Where-Object { $_.event -eq 'scrub_paint' -and $_.proxy -eq $proxy })
+        $submits = @($report.events | Where-Object { $_.event -eq 'scrub_frame_submit' -and $_.proxy -eq $proxy })
         [pscustomobject]@{
             File = $file
             Proxy = $proxy
@@ -41,6 +44,12 @@ foreach ($file in $Path) {
             ScrubMediaErrorMaxUs = Maximum @($paints | ForEach-Object {
                 [Math]::Abs([long]$_.video_pts_us - [long]$_.target_us)
             })
+            ScrubFrameSubmits = $submits.Count
+            ScrubFrameSubmitP95Us = Percentile95 @($submits | ForEach-Object { $_.us })
+            ScrubFrameSubmitMediaErrorMaxUs = Maximum @($submits | ForEach-Object {
+                [Math]::Abs([long]$_.video_pts_us - [long]$_.target_us)
+            })
+            ResumeSubmitOffsetP95Us = Percentile95 $resumeSubmit
             ResumeInternalAvP95Us = Percentile95 $resume
             CaptionDispatchP95Us = Percentile95 $editing
             GuiTimerP95Us = Percentile95 $timer

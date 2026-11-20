@@ -1,63 +1,51 @@
 # meditor
 
-meditor は、AI がゲーム実況の動画を編集する Windows 専用アプリです。日本語の自動文字起こしを備え、制作者も GUI で編集結果の確認や手動編集ができる製品を目指しています。再生・映像処理には FFmpeg を使います。
+meditor は、AI がゲーム実況の動画を編集する Windows 専用アプリです。日本語の自動文字起こしを備え、制作者も GUI で編集結果の確認や手動編集ができる製品を目指しています。
 
-## 最初のプレビュー版
+## プレビュー版
 
-- 日本語の字幕と話者を、ネイティブのテキスト入力欄から編集できます。一覧は表示行だけを取得し、編集中は対象の1行を更新します。
-- 元動画をプレビューし、ドラッグ中だけ短 GOP プロキシに切り替えられます。再生中にドラッグすると、手を離した位置から元動画とミックス音声で再開します。
-- プロジェクトは UTF-8 JSON で保存します。既存の UTF-8 SRT を読み込めます。
+Rust と Slint で、字幕編集、FFmpeg プレビュー、短 GOP プロキシのスクラブ、ゲーム音と複数話者の WAV のミックスを実装しています。プロジェクトは UTF-8 JSON で保存し、既存の version 1 / 2 と UTF-8 SRT を読み込めます。
 
-現在の動画経路は FFmpeg のソフトウェアデコードです。AI 動画編集、日本語の自動文字起こし、字幕・動画の書き出し、D3D11VA と WASAPI を用いた Windows の高速再生経路は開発予定です。
+AI 動画編集、日本語の自動文字起こし、字幕・動画の書き出し、D3D11VA と WASAPI を用いた高速再生は開発予定です。
 
 ## ビルド
 
-C++20 コンパイラ、CMake 3.24 以降、wxWidgets 3.2 以降、FFmpeg（libavformat、libavcodec、libavutil、libswscale）、SDL2、nlohmann-json が必要です。FFmpeg CLI は素材準備とテストで使います。
-
 ### Windows
 
-Visual Studio 2022 の C++ ワークロードと bootstrap 済みの vcpkg を用意し、`VCPKG_ROOT` を設定します。Developer PowerShell で実行してください。
+Rust 1.100.0 の MSVC ツールチェーン、Visual Studio 2022 の C++ ワークロード、CMake、LLVM の libclang、x64 FFmpeg 共有 SDK を用意します。FFmpeg SDK は `include`、`lib`、`bin` を含むものを使います。CMake と MSVC は同梱ビルドする SDL2 に使います。
 
 ```powershell
-cmake -S . -B build -A x64 "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-windows
-cmake --build build --config Release
-ctest --test-dir build -C Release --output-on-failure
-.\build\Release\meditor.exe
+$env:FFMPEG_DIR = 'C:\SDK\ffmpeg-9.1-full_build-shared'
+$env:LIBCLANG_PATH = "$env:ProgramFiles\LLVM\bin"
+$env:PATH = "$env:FFMPEG_DIR\bin;$env:PATH"
+cargo build --manifest-path rust/Cargo.toml --locked --release
+.\rust\target\release\meditor.exe
 ```
 
 ### Linux での開発時の検証
 
-Debian 13 系では `cmake g++ make pkg-config libwxgtk3.2-dev libavformat-dev libavcodec-dev libavutil-dev libswscale-dev libsdl2-dev nlohmann-json3-dev ffmpeg` を導入します。
+Debian 13 系では `build-essential pkg-config libclang-dev libfontconfig-dev libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libsdl2-dev ffmpeg` を導入します。仮想画面での描画テストには `xvfb xauth fonts-noto-cjk` を使います。Linux ではファイル選択に XDG Desktop Portal が必要です。
 
 ```sh
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DMEDITOR_TEST_MEDIA=ON
-cmake --build build --parallel
-ctest --test-dir build --output-on-failure
-./build/meditor
-```
-
-Windows CI でビルドと機能テストを確認しています。Linux CI は開発時の回帰検出に使い、Windows 実機での性能計測は今後の検証項目です。
-
-### Rust の再生制御
-
-Rust 版の最初のクレートはシーク要求と結果の受理を担当します。Rust stable で次を実行できます。GUI とメディアを使うプレビュー版は上記のビルド手順で起動します。[技術選定と移行の ADR](docs/adr/0001-rust-windows-editor.md)
-
-```powershell
-cargo test --locked --manifest-path rust/Cargo.toml
-```
-
-行カバレッジ85%以上とミューテーションテストの確認には、`cargo-llvm-cov`、`llvm-tools-preview`、`cargo-mutants` を使います。`rust` ディレクトリで実行します。
-
-```powershell
-cargo llvm-cov --locked --fail-under-lines 85
-cargo mutants --output target -- --locked
+cargo test --manifest-path rust/Cargo.toml --locked
+cargo run --manifest-path rust/Cargo.toml --locked --bin meditor
 ```
 
 ## 素材を開く
 
-1. **ファイル → 新規プロジェクト** から元動画、ゲーム音と話者の WAV、保存先を選びます。音声は各トラックをステレオ 48 kHz PCM s16le に準備します。動画内の音声は WAV として抽出して追加します。
-2. **字幕を SRT から読み込む** で字幕を追加し、行を選んで話者と本文を編集します。行をダブルクリックすると開始時刻へ移動します。
-3. **区間編集** で元動画の開始・終了を秒単位で指定すると、その区間を一つのクリップとしてプレビュー・保存できます。
-4. プロキシを生成した場合は **スクラブ用プロキシを選択** で指定します。プロジェクトの音声オフセットとゲインは JSON で調整できます。
+1. **新規** から元動画、ゲーム音と話者ごとのステレオ 48 kHz PCM s16le WAV、保存先を選びます。
+2. **SRT 読込** で字幕を追加し、行を選んで話者と本文を編集します。行をダブルクリックすると開始時刻へ移動します。
+3. **素材区間 (秒)** に元動画の開始・終了を入力し、**区間を適用**で一つのクリップとしてプレビューできます。**保存**で編集を確定します。
+4. プロキシを生成した場合は **プロキシを選択** で指定します。ドラッグ中だけプロキシを使い、手を離した時点で元動画に戻ります。音声オフセットとゲインはプロジェクト JSON で調整できます。
 
-合成動画、ゲーム音、話者2本の音声、字幕10,000件を使う手順は [性能計測](docs/performance.md) を参照してください。 [製品要件](docs/requirements.md) · [ユビキタス言語](docs/ubiquitous-language.md) · [AI 切り出しの機能定義](docs/features/ai-clip-editing.md) · [設計・保存形式・配布](docs/design.md) · [受入条件](docs/acceptance.md)
+## 検証
+
+`rust` ディレクトリで受入テストを実行できます。再生制御とプロジェクトモデルの行カバレッジ、ミューテーションテストには `cargo-llvm-cov`、`llvm-tools-preview`、`cargo-mutants` を使います。
+
+```powershell
+cargo test --locked
+cargo llvm-cov --locked --tests --ignore-filename-regex 'src[\\/](main\.rs|audio\.rs|video\.rs|bin)' --fail-under-lines 85
+cargo mutants --output target --file src/lib.rs --file src/project.rs -- --locked
+```
+
+[製品要件](docs/requirements.md) · [編集用語](docs/ubiquitous-language.md) · [機能定義](docs/features/ai-clip-editing.md) · [設計](docs/design.md) · [受入条件](docs/acceptance.md) · [性能計測](docs/performance.md) · [Rust 採用 ADR](docs/adr/0001-rust-windows-editor.md) · [Rust 版への切り替え ADR](docs/adr/0002-rust-editor-cutover.md)
