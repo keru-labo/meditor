@@ -36,7 +36,7 @@ ctest --test-dir build --output-on-failure
 ./build/meditor
 ```
 
-Linux でビルドと実行を確認しました。Windows と macOS の実行確認は今後の検証項目です。
+Windows・Linux の CI でビルドと機能テストを確認しています。Windows 実機での性能計測と macOS の実行確認は今後の検証項目です。
 
 ## 素材を開く
 
@@ -44,4 +44,4 @@ Linux でビルドと実行を確認しました。Windows と macOS の実行�
 2. **字幕を SRT から読み込む** で字幕を追加し、行を選んで話者と本文を編集します。行をダブルクリックすると開始時刻へ移動します。
 3. プロキシを生成した場合は **スクラブ用プロキシを選択** で指定します。プロジェクトの音声オフセットとゲインは JSON で調整できます。
 
-合成動画、ゲーム音、話者2本の音声、字幕10,000件を使う手順は [性能計測](docs/performance.md) を参照してください。 [設計・保存形式・配布](docs/design.md) · [受入条件](docs/acceptance.md)
+合成動画、ゲーム音、話者2本の音声、字幕10,000件を使う手順は [性能計測](docs/performance.md) を参照してください。 [製品要件（レビュー案）](docs/requirements.md) · [設計・保存形式・配布](docs/design.md) · [受入条件](docs/acceptance.md)
