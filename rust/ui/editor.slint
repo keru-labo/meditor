@@ -1,0 +1,263 @@
+import { AboutSlint, Button, CheckBox, LineEdit, ListView, TextEdit } from "std-widgets.slint";
+
+export struct CaptionRow {
+    time-label: string,
+    speaker: string,
+    body: string,
+}
+
+export component EditorWindow inherits Window {
+    title: "meditor";
+    preferred-width: 1180px;
+    preferred-height: 740px;
+    min-width: 780px;
+    min-height: 560px;
+    background: #101219;
+
+    in property <[CaptionRow]> captions;
+    in property <bool> has-project;
+    in property <bool> has-proxy;
+    in-out property <bool> use-proxy;
+    in property <bool> playing;
+    in property <bool> measuring;
+    in property <image> frame;
+    in property <int> playhead;
+    in property <int> selected: -1;
+    in property <string> selection-label;
+    in property <string> filename: "プロジェクト未選択";
+    in property <string> status;
+    in property <string> clock-label;
+    in-out property <string> speaker-text;
+    in-out property <string> caption-text;
+    in-out property <string> clip-start;
+    in-out property <string> clip-end;
+    in-out property <bool> confirm-discard;
+    property <bool> show-about;
+
+    callback open-project();
+    callback new-project();
+    callback save-project();
+    callback import-captions();
+    callback choose-proxy();
+    callback toggle-playback();
+    callback toggle-measurement();
+    callback save-metrics();
+    callback select-caption(int);
+    callback goto-caption(int);
+    callback update-caption();
+    callback update-clip();
+    callback scrub(int);
+    callback finish-scrub(int);
+    callback jump-to(int);
+    callback confirm-leave();
+    callback save-and-leave();
+    callback cancel-leave();
+
+    VerticalLayout {
+        padding: 16px;
+        spacing: 12px;
+        HorizontalLayout {
+            spacing: 8px;
+            Text { text: "meditor"; color: #e8edfa; font-size: 22px; font-weight: 700; vertical-alignment: center; }
+            Button { text: "新規"; clicked => { root.new-project(); } }
+            Button { text: "開く"; clicked => { root.open-project(); } }
+            Button { text: "保存"; enabled: root.has-project; clicked => { root.save-project(); } }
+            Button { text: "SRT 読込"; enabled: root.has-project; clicked => { root.import-captions(); } }
+            Button { text: "プロキシを選択"; enabled: root.has-project; clicked => { root.choose-proxy(); } }
+            Rectangle { horizontal-stretch: 1; }
+            Button { text: "このアプリについて"; clicked => { root.show-about = true; } }
+            Text { text: root.filename; color: #a6afc3; vertical-alignment: center; overflow: elide; max-width: 210px; }
+        }
+        HorizontalLayout {
+            spacing: 12px;
+            VerticalLayout {
+                horizontal-stretch: 3;
+                spacing: 8px;
+                Rectangle {
+                    vertical-stretch: 1;
+                    background: #090a0f;
+                    border-color: #2d3549;
+                    border-width: 1px;
+                    border-radius: 8px;
+                    clip: true;
+                    Image {
+                        x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
+                        source: root.frame;
+                        image-fit: contain;
+                    }
+                    if !root.has-project: Text {
+                        width: parent.width; height: parent.height;
+                        text: "録画を開くか、プロジェクトを作成";
+                        horizontal-alignment: center; vertical-alignment: center; color: #a6afc3;
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Button { text: root.playing ? "一時停止" : "再生"; enabled: root.has-project; clicked => { root.toggle-playback(); } }
+                    CheckBox { text: "スクラブにプロキシを使用"; enabled: root.has-proxy; checked <=> root.use-proxy; }
+                    Rectangle { horizontal-stretch: 1; }
+                    Text { text: root.clock-label; color: #c3cbe0; vertical-alignment: center; }
+                }
+                track := Rectangle {
+                    height: 36px;
+                    background: #242b3b;
+                    border-radius: 5px;
+                    border-width: timeline-keys.has-focus ? 1px : 0px;
+                    border-color: #8cb4ff;
+                    accessible-role: slider;
+                    accessible-label: "タイムライン";
+                    accessible-value: root.playhead;
+                    accessible-value-minimum: 0;
+                    accessible-value-maximum: 1000000;
+                    accessible-value-step: 5000;
+                    accessible-enabled: root.has-project;
+                    accessible-action-increment => { root.jump-to(min(root.playhead + 5000, 1000000)); }
+                    accessible-action-decrement => { root.jump-to(max(root.playhead - 5000, 0)); }
+                    accessible-action-set-value(value) => {
+                        if (value.is-float()) { root.jump-to(round(clamp(value.to-float(), 0, 1000000))); }
+                    }
+                    forward-focus: timeline-keys;
+                    timeline-keys := FocusScope {
+                        enabled: root.has-project;
+                        key-pressed(event) => {
+                            if (event.text == Key.RightArrow) { root.jump-to(min(root.playhead + 5000, 1000000)); return accept; }
+                            if (event.text == Key.LeftArrow) { root.jump-to(max(root.playhead - 5000, 0)); return accept; }
+                            if (event.text == Key.Home) { root.jump-to(0); return accept; }
+                            if (event.text == Key.End) { root.jump-to(1000000); return accept; }
+                            return reject;
+                        }
+                    }
+                    Rectangle {
+                        x: 0px;
+                        width: min(parent.width, max(0px, parent.width * root.playhead / 1000000));
+                        height: parent.height;
+                        background: #334669;
+                        border-radius: 5px;
+                    }
+                    Rectangle {
+                        x: min(parent.width - self.width, parent.width * root.playhead / 1000000);
+                        width: 2px; height: parent.height; background: #8cb4ff;
+                    }
+                    hit := TouchArea {
+                        enabled: root.has-project;
+                        function position() -> int {
+                            return max(0, min(1000000, round(self.mouse-x / track.width * 1000000)));
+                        }
+                        pointer-event(event) => {
+                            if (event.button == PointerEventButton.left) {
+                                if (event.kind == PointerEventKind.down) { timeline-keys.focus(); root.scrub(self.position()); }
+                                if (event.kind == PointerEventKind.up) { root.finish-scrub(self.position()); }
+                            }
+                            if (event.kind == PointerEventKind.cancel) { root.finish-scrub(root.playhead); }
+                        }
+                        moved => { if (self.pressed) { root.scrub(self.position()); } }
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text { text: "素材区間 (秒)"; color: #a6afc3; vertical-alignment: center; }
+                    LineEdit { text <=> root.clip-start; enabled: root.has-project; accessible-label: "素材の開始時刻"; }
+                    LineEdit { text <=> root.clip-end; enabled: root.has-project; accessible-label: "素材の終了時刻"; }
+                    Button { text: "区間を適用"; enabled: root.has-project; clicked => { root.update-clip(); } }
+                }
+            }
+            VerticalLayout {
+                horizontal-stretch: 2;
+                min-width: 315px;
+                spacing: 8px;
+                Text { text: "字幕   " + root.captions.length; color: #e8edfa; font-size: 17px; font-weight: 650; }
+                Rectangle {
+                    vertical-stretch: 1;
+                    forward-focus: caption-keys;
+                    caption-keys := FocusScope {
+                        width: 0px; height: 0px;
+                        enabled: root.captions.length > 0;
+                        key-pressed(event) => {
+                            if (event.text == Key.UpArrow) { caption-list.reveal(max(root.selected - 1, 0)); return accept; }
+                            if (event.text == Key.DownArrow) { caption-list.reveal(min(root.selected + 1, root.captions.length - 1)); return accept; }
+                            if (event.text == Key.Home) { caption-list.reveal(0); return accept; }
+                            if (event.text == Key.End) { caption-list.reveal(root.captions.length - 1); return accept; }
+                            if (event.text == Key.Return && root.selected >= 0) { root.goto-caption(root.selected); return accept; }
+                            return reject;
+                        }
+                    }
+
+                    caption-list := ListView {
+                        accessible-label: "字幕一覧";
+                        accessible-item-count: root.captions.length;
+                        accessible-delegate-focus: root.selected;
+                        function reveal(index: int) {
+                            root.select-caption(index);
+                            let y = index * 38px + self.viewport-y;
+                            if (y < 0px) { self.viewport-y -= y; }
+                            if (y + 38px > self.visible-height) { self.viewport-y -= y + 38px - self.visible-height; }
+                        }
+                        for row[index] in root.captions: Rectangle {
+                            height: 38px;
+                            accessible-role: list-item;
+                            accessible-item-index: index;
+                            accessible-label: row.time-label + " " + row.speaker + " " + row.body;
+                            accessible-item-selectable: true;
+                            accessible-item-selected: root.selected == index;
+                            accessible-action-default => { root.select-caption(index); }
+                            background: root.selected == index ? #2e4368 : Math.mod(index, 2) == 0 ? #1c2231 : #161b27;
+                            HorizontalLayout {
+                                padding-left: 9px; padding-right: 9px; spacing: 8px;
+                                Text { text: row.time-label; color: #a6afc3; width: 75px; vertical-alignment: center; }
+                                Text { text: row.speaker; color: #a7c6ff; width: 64px; overflow: elide; vertical-alignment: center; }
+                                Text { text: row.body; color: #e8edfa; overflow: elide; vertical-alignment: center; }
+                            }
+                            TouchArea {
+                                clicked => { caption-keys.focus(); root.select-caption(index); }
+                                double-clicked => { root.goto-caption(index); }
+                            }
+                        }
+                    }
+                }
+                Text { text: root.selection-label; color: #a6afc3; overflow: elide; }
+                LineEdit { text <=> root.speaker-text; enabled: root.selected >= 0; placeholder-text: "話者"; edited(_) => { root.update-caption(); } }
+                TextEdit { text <=> root.caption-text; enabled: root.selected >= 0; placeholder-text: "字幕本文"; height: 98px; edited(_) => { root.update-caption(); } }
+            }
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            Text { text: root.status; color: #a6afc3; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
+            Button { text: root.measuring ? "計測停止" : "計測開始"; enabled: root.has-project; clicked => { root.toggle-measurement(); } }
+            Button { text: "計測保存"; enabled: root.has-project; clicked => { root.save-metrics(); } }
+        }
+    }
+    if root.show-about: Rectangle {
+        background: #b0101219;
+        TouchArea {}
+        Rectangle {
+            width: 320px; height: 196px;
+            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+            background: #252e42; border-radius: 8px;
+            VerticalLayout {
+                padding: 14px; spacing: 8px;
+                Text { text: "meditor"; font-size: 18px; font-weight: 700; color: #e8edfa; }
+                AboutSlint { vertical-stretch: 1; }
+                Button { text: "閉じる"; clicked => { root.show-about = false; } }
+            }
+        }
+    }
+    if root.confirm-discard: Rectangle {
+        background: #b0101219;
+        TouchArea {}
+        Rectangle {
+            width: 380px; height: 124px;
+            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+            background: #252e42; border-radius: 8px;
+            VerticalLayout {
+                padding: 14px; spacing: 12px;
+                Text { text: "プロジェクトの変更を保存しますか？"; color: #e8edfa; }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Button { text: "キャンセル"; clicked => { root.cancel-leave(); } }
+                    Button { text: "変更を破棄"; clicked => { root.confirm-leave(); } }
+                    Button { text: "保存して続行"; clicked => { root.save-and-leave(); } }
+                }
+            }
+        }
+    }
+}
