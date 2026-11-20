@@ -12,6 +12,7 @@
 #endif
 
 #include <algorithm>
+#include <charconv>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -26,6 +27,36 @@ std::string utf8(const wxString& text)
 {
     const auto bytes = text.ToUTF8();
     return bytes.data() ? std::string(bytes.data(), bytes.length()) : std::string{};
+}
+
+std::optional<Time> parseSeconds(wxString input)
+{
+    const auto text = utf8(input.Trim().Trim(false));
+    const std::string_view value(text);
+    const auto decimal = value.find('.');
+    const auto integral = value.substr(0, decimal);
+    Time seconds = 0;
+    const auto parsed = std::from_chars(integral.data(), integral.data() + integral.size(), seconds);
+    if (parsed.ec != std::errc{} || parsed.ptr != integral.data() + integral.size() ||
+        seconds < 0 || seconds > maximumDuration / second)
+        return std::nullopt;
+
+    Time fraction = 0;
+    if (decimal != std::string_view::npos) {
+        const auto digits = value.substr(decimal + 1);
+        if (digits.empty() || digits.size() > 6 || digits.find_first_not_of("0123456789") != std::string_view::npos)
+            return std::nullopt;
+        std::from_chars(digits.data(), digits.data() + digits.size(), fraction);
+        for (auto i = digits.size(); i < 6; ++i)
+            fraction *= 10;
+    }
+    return seconds * second + fraction;
+}
+
+wxString secondsText(Time position)
+{
+    return wxString::Format("%lld.%06lld", static_cast<long long>(position / second),
+                            static_cast<long long>(position % second));
 }
 
 std::filesystem::path filePath(const wxString& text)
@@ -289,11 +320,14 @@ public:
         auto* transportHeader = new wxBoxSizer(wxHORIZONTAL);
         auto* timelineTitle = label(transport, L"タイムライン", 11, text, true);
         play_ = new CommandButton(transport, L"再生", 96, true);
+        trim_ = new CommandButton(transport, L"区間編集", 96);
+        trim_->action = [this] { editClip(); };
         time_ = label(transport, "00:00.000  /  00:00.000", 10, text, true);
         time_->SetFont(wxFont(wxFontInfo(10).Family(wxFONTFAMILY_TELETYPE).Bold()));
         transportHeader->Add(timelineTitle, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, padding);
         transportHeader->Add(time_, 0, wxALIGN_CENTER_VERTICAL);
         transportHeader->AddStretchSpacer();
+        transportHeader->Add(trim_, 0, wxRIGHT, FromDIP(6));
         transportHeader->Add(play_, 0);
         timeline_ = new ScrubTimeline(transport);
         transportLayout->Add(transportHeader, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, padding);
@@ -342,14 +376,21 @@ public:
         play_->action = [this] { togglePlayback(); };
         list_->Bind(wxEVT_LISTBOX, [this](wxCommandEvent& e) { select(e.GetInt()); });
         list_->Bind(wxEVT_LISTBOX_DCLICK, [this](wxCommandEvent& e) {
-            if (video_ && e.GetInt() >= 0)
-                seekOriginal(project_.captions.at(e.GetInt()).start, false);
+            if (!video_ || e.GetInt() < 0)
+                return;
+            const auto start = project_.captions.at(e.GetInt()).start;
+            if (project_.clip && start >= playbackRange().duration()) {
+                setStatusText(L"字幕の開始時刻がクリップの範囲外です");
+                return;
+            }
+            seekOriginal(start, false);
         });
         speaker_->Bind(wxEVT_TEXT, [this](wxCommandEvent&) { edit(); });
         text_->Bind(wxEVT_TEXT, [this](wxCommandEvent&) { edit(); });
         timeline_->Disable();
         proxy_->Disable();
         play_->Disable();
+        trim_->Disable();
         select(-1);
         setStatusText(L"プロジェクトを開いてください");
         timer_.Start(8);
@@ -366,6 +407,8 @@ public:
         try {
             auto next = Project::load(path);
             auto player = std::make_unique<VideoWorker>(next.video, next.proxy);
+            if (next.clip && !next.clip->validFor(player->duration()))
+                throw std::runtime_error("Saved clip exceeds the video duration");
             stopAudio();
             audio_.reset();
             video_ = std::move(player);
@@ -381,11 +424,12 @@ public:
                 list_->SetSelection(0);
                 select(0);
             }
-            timeline_->setDuration(video_->duration());
+            timeline_->setDuration(playbackRange().duration());
             timeline_->Enable();
             proxy_->Enable(!project_.proxy.empty());
             proxy_->SetValue(!project_.proxy.empty());
             play_->Enable();
+            trim_->Enable();
             screen_->clear();
             seekOriginal(0, false);
             const auto filename = display(meditor::utf8(path.filename()));
@@ -422,7 +466,7 @@ private:
     {
         if (!dirty_)
             return true;
-        const auto choice = wxMessageBox(L"字幕の変更を保存しますか？", "meditor",
+        const auto choice = wxMessageBox(L"プロジェクトの変更を保存しますか？", "meditor",
                                         wxYES_NO | wxCANCEL | wxICON_QUESTION, this);
         return choice == wxNO || (choice == wxYES && save());
     }
@@ -476,12 +520,16 @@ private:
         try {
             auto proxy = filePath(dialog.GetPath());
             auto worker = std::make_unique<VideoWorker>(project_.video, proxy);
+            if (project_.clip && !project_.clip->validFor(worker->duration()))
+                throw std::runtime_error("Saved clip exceeds the video duration");
             const bool resume = playing_ || startWhenReady_;
             stopAudio();
+            audio_.reset();
             scrubbing_ = false;
             pendingScrub_.reset();
             project_.proxy = std::move(proxy);
             video_ = std::move(worker);
+            timeline_->setDuration(playbackRange().duration());
             proxy_->Enable();
             proxy_->SetValue(true);
             dirty_ = true;
@@ -560,20 +608,80 @@ private:
             record({{"event", "caption_edit_dispatch"}, {"us", elapsed(began)}});
     }
 
+    ClipRange playbackRange() const
+    {
+        return project_.playbackRange(video_->duration());
+    }
+
+    void editClip()
+    {
+        if (!video_ || scrubbing_)
+            return;
+        const auto before = playbackRange();
+        wxDialog dialog(this, wxID_ANY, L"クリップの素材区間");
+        const int padding = dialog.FromDIP(12);
+        auto* fields = new wxFlexGridSizer(2, padding, padding);
+        fields->AddGrowableCol(1);
+        auto addTime = [&](const wxString& name, Time value) {
+            fields->Add(new wxStaticText(&dialog, wxID_ANY, name), 0, wxALIGN_CENTER_VERTICAL);
+            auto* input = new wxTextCtrl(&dialog, wxID_ANY, secondsText(value));
+            fields->Add(input, 1, wxEXPAND);
+            return input;
+        };
+        auto* start = addTime(L"素材の開始時刻 (秒)", before.start);
+        auto* end = addTime(L"素材の終了時刻 (秒)", before.end);
+        auto* layout = new wxBoxSizer(wxVERTICAL);
+        layout->Add(fields, 0, wxEXPAND | wxALL, padding);
+        layout->Add(new wxStaticText(&dialog, wxID_ANY,
+                    L"素材の長さ  " + view::timeText(video_->duration())), 0, wxLEFT | wxRIGHT | wxBOTTOM, padding);
+        layout->Add(dialog.CreateSeparatedButtonSizer(wxOK | wxCANCEL), 0, wxEXPAND | wxALL, padding);
+        dialog.SetSizerAndFit(layout);
+
+        while (dialog.ShowModal() == wxID_OK) {
+            const auto first = parseSeconds(start->GetValue());
+            const auto last = parseSeconds(end->GetValue());
+            if (!first || !last || !ClipRange{*first, *last}.validFor(video_->duration())) {
+                wxMessageBox(L"素材内の秒数を入力してください。開始は終了より前にしてください。",
+                             L"素材区間を確認", wxOK | wxICON_WARNING, &dialog);
+                continue;
+            }
+            const ClipRange next{*first, *last};
+            if (next == before)
+                return;
+            project_.setClip(next, video_->duration());
+            dirty_ = true;
+            stopAudio();
+            audio_.reset();
+            screen_->clear();
+            timeline_->setDuration(next.duration());
+            seekOriginal(before.start + position_ - next.start, false);
+            setStatusText(L"クリップの区間を更新しました");
+            return;
+        }
+    }
+
     Time fromSlider(int value) const
     {
-        return (static_cast<Time>(value) * video_->duration()) / sliderRange;
+        return (static_cast<Time>(value) * playbackRange().duration()) / sliderRange;
     }
 
     void showPosition(Time position)
     {
-        position_ = std::clamp(position, Time{0}, video_->duration());
-        const auto slider = static_cast<int>((position_ * sliderRange + video_->duration() - 1) / video_->duration());
+        const auto duration = playbackRange().duration();
+        position_ = std::clamp(position, Time{0}, duration);
+        const auto slider = static_cast<int>((position_ * sliderRange + duration - 1) / duration);
         if (!scrubbing_) {
             shownSlider_ = slider;
             timeline_->setValue(slider);
         }
-        time_->SetLabel(view::timeText(position_) + "  /  " + view::timeText(video_->duration()));
+        time_->SetLabel(view::timeText(position_) + "  /  " + view::timeText(duration));
+    }
+
+    VideoRequest previewRequest(bool proxy, bool scrub, Clock::time_point issued) const
+    {
+        const auto range = playbackRange();
+        const auto boundedEnd = project_.clip ? std::optional<Time>(range.end) : std::nullopt;
+        return {range.start + position_, epoch_, proxy, scrub, issued, boundedEnd};
     }
 
     void stopAudio()
@@ -597,8 +705,7 @@ private:
             ++epoch_;
         }
         showPosition(fromSlider(value));
-        pendingScrub_ = VideoRequest{position_, epoch_, proxy_->IsEnabled() && proxy_->GetValue(),
-                                    true, Clock::now()};
+        pendingScrub_ = previewRequest(proxy_->IsEnabled() && proxy_->GetValue(), true, Clock::now());
         latestScrubAt_ = pendingScrub_->issued;
         if (measuring_)
             record({{"event", "scrub_input"}, {"target_us", position_}, {"proxy", pendingScrub_->proxy}});
@@ -617,7 +724,8 @@ private:
         showPosition(position);
         startWhenReady_ = resume;
         play_->SetLabel(resume ? L"停止" : L"再生");
-        video_->submit({position_, ++epoch_, false, false, Clock::now()});
+        ++epoch_;
+        video_->submit(previewRequest(false, false, Clock::now()));
     }
 
     void togglePlayback()
@@ -627,7 +735,7 @@ private:
         if (playing_ || startWhenReady_) {
             seekOriginal(position_, false);
         } else {
-            seekOriginal(position_ == video_->duration() ? 0 : position_, true);
+            seekOriginal(position_ == playbackRange().duration() ? 0 : position_, true);
         }
     }
 
@@ -666,27 +774,29 @@ private:
                 } else {
                     screen_->showFrame(*result);
                     if (startWhenReady_) {
+                        const auto range = playbackRange();
                         if (!audio_)
-                            audio_ = std::make_unique<AudioMixer>(project_.audio, video_->duration());
-                        audio_->start(position_);
+                            audio_ = std::make_unique<AudioMixer>(project_.audio, range.end);
+                        audio_->start(range.start + position_);
                         startWhenReady_ = false;
                         playing_ = true;
                         play_->SetLabel(L"一時停止");
                         if (measuring_) {
                             resumePaint_ = result->request.issued;
                             record({{"event", "resume_queued"}, {"position_us", position_},
-                                    {"video_pts_us", result->frame->pts}});
+                                    {"video_pts_us", result->frame->pts - range.start}});
                         }
                     }
                 }
             }
             if (playing_) {
-                showPosition(audio_->position());
-                if (position_ >= video_->duration()) {
+                const auto range = playbackRange();
+                showPosition(audio_->position() - range.start);
+                if (position_ >= range.duration()) {
                     stopAudio();
                 } else if (now - lastPlaySend_ >= std::chrono::milliseconds(16)) {
                     lastPlaySend_ = now;
-                    video_->submit({position_, epoch_, false, false, now});
+                    video_->submit(previewRequest(false, false, now));
                 }
             }
         } catch (const std::exception& error) {
@@ -735,13 +845,15 @@ private:
         }
         if (!measuring_)
             return;
+        const auto sourceStart = playbackRange().start;
         if (request.scrub)
             record({{"event", "scrub_paint"}, {"us", elapsed(request.issued)},
-                    {"target_us", request.target}, {"video_pts_us", pts}, {"proxy", request.proxy}});
+                    {"target_us", request.target - sourceStart}, {"video_pts_us", pts - sourceStart},
+                    {"proxy", request.proxy}});
         if (request.issued == resumePaint_ && playing_) {
             try {
-                record({{"event", "resume_paint"}, {"video_pts_us", pts},
-                        {"audio_queue_position_us", audio_->position()}});
+                record({{"event", "resume_paint"}, {"video_pts_us", pts - sourceStart},
+                        {"audio_queue_position_us", audio_->position() - sourceStart}});
             } catch (const std::exception&) {
                 // The transport timer reports audio failures.
             }
@@ -780,6 +892,7 @@ private:
     ScrubTimeline* timeline_ = nullptr;
     wxCheckBox* proxy_ = nullptr;
     CommandButton* play_ = nullptr;
+    CommandButton* trim_ = nullptr;
     wxStaticText* time_ = nullptr;
     wxStaticText* projectName_ = nullptr;
     wxStaticText* captionCount_ = nullptr;

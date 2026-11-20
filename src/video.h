@@ -15,6 +15,7 @@ struct VideoRequest {
     bool proxy;
     bool scrub;
     Clock::time_point issued;
+    std::optional<Time> sourceEnd = std::nullopt;
 };
 
 struct VideoFrame {
