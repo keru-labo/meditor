@@ -7,7 +7,12 @@
 #include <wx/listctrl.h>
 #include <wx/splitter.h>
 
+#ifdef __WXMSW__
+#include "windows_screenshot.h"
+#endif
+
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <functional>
@@ -83,7 +88,7 @@ public:
     {
         SetBackgroundStyle(wxBG_STYLE_PAINT);
         Bind(wxEVT_PAINT, &Screen::paint, this);
-        Bind(wxEVT_SIZE, [this](wxSizeEvent& event) { resized_ = {}; Refresh(); event.Skip(); });
+        Bind(wxEVT_SIZE, [this](wxSizeEvent& event) { resized_ = wxBitmap{}; Refresh(); event.Skip(); });
     }
 
     void showFrame(const Preview& preview)
@@ -96,7 +101,7 @@ public:
     {
         image_ = {};
         imageFrame_.reset();
-        resized_ = {};
+        resized_ = wxBitmap{};
         pending_.reset();
         Refresh(false);
     }
@@ -121,7 +126,7 @@ private:
             for (int row = 0; row < frame.height; ++row)
                 std::memcpy(image_.GetData() + row * frame.width * 3,
                             frame.rgb.data() + row * frame.stride, frame.width * 3);
-            resized_ = {};
+            resized_ = wxBitmap{};
         }
         if (!image_.IsOk() || area.x < 1 || area.y < 1)
             return;
@@ -259,9 +264,13 @@ public:
         timer_.Start(8);
     }
 
-    void closeAfterFirstFrame() { smokeTest_ = true; }
+    void closeAfterFirstFrame(wxString screenshot, std::function<void(bool)> done)
+    {
+        smokeScreenshot_ = std::move(screenshot);
+        smokeDone_ = std::move(done);
+    }
 
-    bool load(const std::filesystem::path& path)
+    bool load(const std::filesystem::path& path, bool interactive = true)
     {
         try {
             auto next = Project::load(path);
@@ -289,7 +298,10 @@ public:
                                            project_.captions.size(), project_.audio.size()));
             return true;
         } catch (const std::exception& error) {
-            wxMessageBox(display(error.what()), L"プロジェクトを開けません", wxOK | wxICON_ERROR, this);
+            if (interactive)
+                wxMessageBox(display(error.what()), L"プロジェクトを開けません", wxOK | wxICON_ERROR, this);
+            else
+                std::fprintf(stderr, "Could not load smoke-test project: %s\n", error.what());
             return false;
         }
     }
@@ -517,6 +529,11 @@ private:
             return;
         try {
             const auto now = Clock::now();
+            if (smokeCaptureAt_ && now >= *smokeCaptureAt_) {
+                smokeCaptureAt_.reset();
+                finishSmokeTest();
+                return;
+            }
             if (measuring_) {
                 if (previousTick_ != Clock::time_point{})
                     record({{"event", "gui_timer_interval"}, {"us", elapsed(previousTick_)}});
@@ -529,6 +546,11 @@ private:
             if (auto result = video_->take(); result && accepts(result->request)) {
                 if (!result->error.empty()) {
                     SetStatusText(display(result->error));
+                    if (smokeDone_) {
+                        std::fprintf(stderr, "Could not decode smoke-test frame: %s\n", result->error.c_str());
+                        finishSmokeTest(false);
+                        return;
+                    }
                     if (result->request.proxy)
                         proxy_->SetValue(false);
                     if (startWhenReady_)
@@ -576,11 +598,32 @@ private:
         return request.epoch == epoch_ && (!request.scrub || request.issued == latestScrubAt_);
     }
 
+    void finishSmokeTest(bool success = true)
+    {
+        if (success && !smokeScreenshot_.empty()) {
+#ifdef __WXMSW__
+            success = saveWindowsScreenshot(*this, smokeScreenshot_);
+#else
+            success = false;
+#endif
+            if (!success)
+                std::fputs("Could not capture the editor with its synthetic preview.\n", stderr);
+        }
+        if (auto done = std::exchange(smokeDone_, {})) {
+            done(success);
+            Close();
+        }
+    }
+
     void observePaint(const VideoRequest& request, Time pts)
     {
-        if (smokeTest_) {
-            smokeTest_ = false;
-            CallAfter([this] { Close(); });
+        if (smokeDone_ && !smokeCaptureAt_) {
+            if (smokeScreenshot_.empty()) {
+                CallAfter([this] { finishSmokeTest(); });
+            } else {
+                // Allow native child controls and the buffered preview to finish painting.
+                smokeCaptureAt_ = Clock::now() + std::chrono::milliseconds(250);
+            }
         }
         if (!measuring_)
             return;
@@ -649,7 +692,9 @@ private:
     Clock::time_point previousTick_{};
     Clock::time_point resumePaint_{};
     bool measuring_ = false;
-    bool smokeTest_ = false;
+    std::optional<Clock::time_point> smokeCaptureAt_;
+    wxString smokeScreenshot_;
+    std::function<void(bool)> smokeDone_;
     std::size_t metricsDropped_ = 0;
     std::vector<nlohmann::json> metrics_;
 };
@@ -659,18 +704,37 @@ public:
     bool OnInit() override
     {
         auto* editor = new Editor;
-        editor->Show();
-        if (argc == 3 && argv[1] == "--smoke-test") {
-            editor->closeAfterFirstFrame();
-            if (!editor->load(filePath(argv[2]))) {
+        const bool smoke = argc > 1 && argv[1] == "--smoke-test";
+        if (smoke && argc != 3 && argc != 4) {
+            editor->Destroy();
+            return false;
+        }
+        if (smoke) {
+            if (argc == 4) {
+                editor->SetSize(960, 680);
+                editor->Move(0, 0);
+            }
+            editor->closeAfterFirstFrame(argc == 4 ? wxString(argv[3]) : wxString{},
+                [this](bool success) { smokeFailed_ = !success; });
+            if (!editor->load(filePath(argv[2]), false)) {
                 editor->Destroy();
                 return false;
             }
-        } else if (argc > 1) {
-            editor->load(filePath(argv[1]));
         }
+        editor->Show();
+        if (!smoke && argc > 1)
+            editor->load(filePath(argv[1]));
         return true;
     }
+
+    int OnRun() override
+    {
+        const auto result = wxApp::OnRun();
+        return smokeFailed_ ? 1 : result;
+    }
+
+private:
+    bool smokeFailed_ = false;
 };
 }
 }

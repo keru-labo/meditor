@@ -22,3 +22,129 @@ jobs:
       - run: ctest --test-dir build --output-on-failure
       - name: Draw the first frame of the 10,000-caption fixture
         run: SDL_AUDIODRIVER=dummy xvfb-run -a timeout 15s ./build/meditor --smoke-test build/media-fixture/fixture.json
+
+  windows:
+    name: Windows tests and screenshot
+    runs-on: windows-2022
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install native Windows dependencies
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-pkgconf
+            mingw-w64-ucrt-x86_64-ffmpeg
+            mingw-w64-ucrt-x86_64-nlohmann-json
+            mingw-w64-ucrt-x86_64-SDL2
+            mingw-w64-ucrt-x86_64-wxwidgets3.2-msw
+      - name: Configure and build Release
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DMEDITOR_TEST_MEDIA=ON
+          cmake --build build --parallel 2
+      - name: Run CTest
+        run: ctest --test-dir build --output-on-failure
+      - name: Capture the editor with the 10,000-caption fixture
+        env:
+          SDL_AUDIODRIVER: dummy
+        run: |
+          png="$(cygpath -u "$RUNNER_TEMP")/meditor-windows.png"
+          rm -f "$png"
+          timeout --foreground --kill-after=5s 30s ./build/meditor.exe --smoke-test \
+            build/media-fixture/fixture.json "$png"
+          test -s "$png"
+      - name: Upload Windows screenshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: meditor-windows-screenshot
+          path: ${{ runner.temp }}/meditor-windows.png
+          if-no-files-found: error
+          retention-days: 14
+
+  screenshot-comment:
+    name: Post Windows screenshot to PR
+    needs: windows
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    concurrency:
+      group: meditor-screenshot-${{ github.event.pull_request.number }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: meditor-windows-screenshot
+      - uses: actions/github-script@v8
+        with:
+          script: |
+            const fs = require('node:fs');
+            const { owner, repo } = context.repo;
+            const event = context.payload.pull_request;
+            const number = event.number;
+            const { data: current } = await github.rest.pulls.get({ owner, repo, pull_number: number });
+            if (current.state !== 'open' || current.head.sha !== event.head.sha) return;
+
+            const path = 'meditor-windows.png';
+            const png = fs.readFileSync(path);
+            if (png.length < 24 || png.length > 2 * 1024 * 1024 ||
+                png.subarray(0, 8).toString('hex') !== '89504e470d0a1a0a') {
+              throw new Error('Expected a Windows screenshot PNG of at most 2 MiB');
+            }
+
+            const branch = `ci/screenshots/pr-${number}`;
+            let ref;
+            try {
+              ({ data: ref } = await github.rest.git.getRef({ owner, repo, ref: `heads/${branch}` }));
+            } catch (error) {
+              if (error.status !== 404) throw error;
+              ({ data: ref } = await github.rest.git.createRef({
+                owner, repo, ref: `refs/heads/${branch}`, sha: event.base.sha
+              }));
+            }
+
+            let previous;
+            try {
+              ({ data: previous } = await github.rest.repos.getContent({ owner, repo, path, ref: branch }));
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+
+            const content = png.toString('base64');
+            let imageCommit = ref.object.sha;
+            if (previous?.content?.replace(/\s/g, '') !== content) {
+              const { data: result } = await github.rest.repos.createOrUpdateFileContents({
+                owner, repo, path, branch, content, sha: previous?.sha,
+                message: `Update Windows screenshot for PR #${number}`
+              });
+              imageCommit = result.commit.sha;
+            }
+
+            const marker = '<!-- meditor-windows-screenshot -->';
+            const image = `https://raw.githubusercontent.com/${owner}/${repo}/${imageCommit}/${path}`;
+            const run = `${process.env.GITHUB_SERVER_URL}/${owner}/${repo}/actions/runs/${context.runId}`;
+            const body = [
+              marker,
+              '### Windows プレビュー',
+              `![Windows で撮影した meditor の画面](${image})`,
+              `字幕10,000件・音声3トラックの合成プロジェクト · [実行結果](${run}) · \`${event.head.sha.slice(0, 7)}\``
+            ].join('\n\n');
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner, repo, issue_number: number
+            });
+            const comment = comments.find(item =>
+              item.user?.login === 'github-actions[bot]' && item.body?.startsWith(marker)
+            );
+            if (comment) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: comment.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number: number, body });
+            }
