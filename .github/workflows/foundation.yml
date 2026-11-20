@@ -1,0 +1,32 @@
+name: Preview foundation
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 scripts/check_docs.py
+      - run: python3 scripts/check_seek.py
+      - name: Verify Lean state model
+        run: |
+          version=$(cut -d: -f2 lean-toolchain)
+          release="lean-${version#v}-linux"
+          curl -fsSL "https://github.com/leanprover/lean4/releases/download/$version/$release.tar.zst" -o "$RUNNER_TEMP/lean.tar.zst"
+          tar --zstd -xf "$RUNNER_TEMP/lean.tar.zst" -C "$RUNNER_TEMP"
+          "$RUNNER_TEMP/$release/bin/lean" proof/LatestSeek.lean
+  qt-build:
+    runs-on: ubuntu-latest
+    container: debian:trixie
+    steps:
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates git cmake g++ make qt6-declarative-dev qt6-multimedia-dev
+      - uses: actions/checkout@v4
+      - run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+      - run: cmake --build build --parallel 2
+      - run: ctest --test-dir build --output-on-failure
