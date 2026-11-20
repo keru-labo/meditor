@@ -7,6 +7,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ffmpeg-editor-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   linux:
     runs-on: ubuntu-latest
@@ -18,7 +22,7 @@ jobs:
           apt-get install -y --no-install-recommends ca-certificates git cmake g++ make pkg-config libwxgtk3.2-dev libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libsdl2-dev nlohmann-json3-dev ffmpeg xvfb xauth
       - uses: actions/checkout@v4
       - run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DMEDITOR_TEST_MEDIA=ON
-      - run: cmake --build build --parallel 2
+      - run: cmake --build build --parallel 4
       - run: ctest --test-dir build --output-on-failure
       - name: Draw the first frame of the 10,000-caption fixture
         run: SDL_AUDIODRIVER=dummy xvfb-run -a timeout 15s ./build/meditor --smoke-test build/media-fixture/fixture.json
@@ -36,20 +40,36 @@ jobs:
         uses: msys2/setup-msys2@v2
         with:
           msystem: UCRT64
+          path-type: inherit
           update: true
           install: >-
             mingw-w64-ucrt-x86_64-gcc
-            mingw-w64-ucrt-x86_64-cmake
-            mingw-w64-ucrt-x86_64-ninja
             mingw-w64-ucrt-x86_64-pkgconf
-            mingw-w64-ucrt-x86_64-ffmpeg
             mingw-w64-ucrt-x86_64-nlohmann-json
             mingw-w64-ucrt-x86_64-SDL2
             mingw-w64-ucrt-x86_64-wxwidgets3.2-msw
+      - name: Prepare pinned FFmpeg SDK
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP 'ffmpeg-sdk.7z'
+          $sdk = Join-Path $env:RUNNER_TEMP 'ffmpeg-9.1-full_build-shared'
+          $url = 'https://github.com/GyanD/codexffmpeg/releases/download/9.1/ffmpeg-9.1-full_build-shared.7z'
+          $expected = '6bc6f09cd4379ed914489728044c1e0115861a9d47f7a1c07d71b8bec02708d7'
+          curl.exe --fail --location --retry 3 --output $archive $url
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash -ne $expected) {
+            throw "FFmpeg SDK hash mismatch"
+          }
+          & "$env:ProgramFiles/7-Zip/7z.exe" x -y "-o$env:RUNNER_TEMP" $archive
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "MEDITOR_FFMPEG_ROOT=$sdk" >> $env:GITHUB_ENV
+          (Join-Path $sdk 'bin') >> $env:GITHUB_PATH
       - name: Configure and build Release
         run: |
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DMEDITOR_TEST_MEDIA=ON
-          cmake --build build --parallel 2
+          CXX=g++ cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DMEDITOR_TEST_MEDIA=ON \
+            "-DCMAKE_PREFIX_PATH=$(cygpath -m "$MINGW_PREFIX")" \
+            "-DMEDITOR_FFMPEG_ROOT=$(cygpath -m "$MEDITOR_FFMPEG_ROOT")"
+          cmake --build build --parallel 4
       - name: Run CTest
         run: ctest --test-dir build --output-on-failure
       - name: Capture the editor with the 10,000-caption fixture
