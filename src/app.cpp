@@ -88,7 +88,7 @@ public:
     {
         SetBackgroundStyle(wxBG_STYLE_PAINT);
         Bind(wxEVT_PAINT, &Screen::paint, this);
-        Bind(wxEVT_SIZE, [this](wxSizeEvent& event) { resized_ = {}; Refresh(); event.Skip(); });
+        Bind(wxEVT_SIZE, [this](wxSizeEvent& event) { resized_ = wxBitmap{}; Refresh(); event.Skip(); });
     }
 
     void showFrame(const Preview& preview)
@@ -101,7 +101,7 @@ public:
     {
         image_ = {};
         imageFrame_.reset();
-        resized_ = {};
+        resized_ = wxBitmap{};
         pending_.reset();
         Refresh(false);
     }
@@ -126,7 +126,7 @@ private:
             for (int row = 0; row < frame.height; ++row)
                 std::memcpy(image_.GetData() + row * frame.width * 3,
                             frame.rgb.data() + row * frame.stride, frame.width * 3);
-            resized_ = {};
+            resized_ = wxBitmap{};
         }
         if (!image_.IsOk() || area.x < 1 || area.y < 1)
             return;
