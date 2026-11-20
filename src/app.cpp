@@ -561,6 +561,7 @@ private:
             }
         } catch (const std::exception& error) {
             stopAudio();
+            audio_.reset();
             SetStatusText(display(error.what()));
         }
     }

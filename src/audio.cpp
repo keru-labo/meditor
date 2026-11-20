@@ -101,62 +101,64 @@ struct Wave {
 }
 
 struct AudioMixer::State {
-    std::vector<Wave> tracks;
+    const bool silent;
     SDL_AudioDeviceID device = 0;
     const Time duration;
     const Time end;
     std::mutex mutex;
     std::condition_variable wake;
     std::uint64_t epoch = 0;
+    std::uint64_t deviceEpoch = 0;
     Time written = 0;
     Time silentPosition = 0;
     std::chrono::steady_clock::time_point silentStart;
     bool active = false;
     bool preroll = false;
     std::string error;
+    std::string initializationError;
     std::jthread worker;
 
     State(const std::vector<Track>& source, Time duration)
-        : duration(duration), end(toFrames(duration))
+        : silent(source.empty()), duration(duration), end(toFrames(duration))
     {
-        tracks.reserve(source.size());
-        for (const auto& track : source)
-            tracks.emplace_back(track);
-        if (tracks.empty())
+        if (silent)
             return;
         SDL_SetMainReady();
+        worker = std::jthread([this, source](std::stop_token stop) {
+            try {
+                run(stop, source);
+            } catch (const std::exception& exception) {
+                const std::lock_guard lock(mutex);
+                initializationError = exception.what();
+            }
+        });
+    }
+
+    ~State()
+    {
+        if (silent)
+            return;
+        worker.request_stop();
+        wake.notify_all();
+        worker.join();
+    }
+
+    static SDL_AudioDeviceID openDevice()
+    {
         if (SDL_InitSubSystem(SDL_INIT_AUDIO) != 0)
             throw std::runtime_error(SDL_GetError());
-
         SDL_AudioSpec desired{};
         desired.freq = sampleRate;
         desired.format = AUDIO_S16SYS;
         desired.channels = channels;
         desired.samples = blockFrames;
-        device = SDL_OpenAudioDevice(nullptr, 0, &desired, nullptr, 0);
-        if (!device) {
+        const auto opened = SDL_OpenAudioDevice(nullptr, 0, &desired, nullptr, 0);
+        if (!opened) {
             const std::string error = SDL_GetError();
             SDL_QuitSubSystem(SDL_INIT_AUDIO);
             throw std::runtime_error(error);
         }
-        try {
-            worker = std::jthread([this](std::stop_token stop) { run(stop); });
-        } catch (...) {
-            SDL_CloseAudioDevice(device);
-            SDL_QuitSubSystem(SDL_INIT_AUDIO);
-            throw;
-        }
-    }
-
-    ~State()
-    {
-        if (!device)
-            return;
-        worker.request_stop();
-        wake.notify_all();
-        worker.join();
-        SDL_CloseAudioDevice(device);
-        SDL_QuitSubSystem(SDL_INIT_AUDIO);
+        return opened;
     }
 
     void resetDevice()
@@ -165,20 +167,54 @@ struct AudioMixer::State {
         SDL_ClearQueuedAudio(device);
     }
 
-    void run(std::stop_token stop)
+    void run(std::stop_token stop, const std::vector<Track>& source)
     {
+        std::vector<Wave> tracks;
+        tracks.reserve(source.size());
+        for (const auto& track : source)
+            tracks.emplace_back(track);
+        if (stop.stop_requested())
+            return;
+        // WASAPI requires device open and close on the same thread.
+        const struct Device {
+            State& state;
+            SDL_AudioDeviceID id;
+
+            ~Device()
+            {
+                {
+                    const std::lock_guard lock(state.mutex);
+                    state.device = 0;
+                }
+                SDL_CloseAudioDevice(id);
+                SDL_QuitSubSystem(SDL_INIT_AUDIO);
+            }
+        } opened{*this, openDevice()};
         constexpr auto queueBytes = 2 * blockFrames * frameBytes;
         std::unique_lock lock(mutex);
+        device = opened.id;
         while (!stop.stop_requested()) {
+            if (deviceEpoch != epoch) {
+                const auto generation = epoch;
+                lock.unlock();
+                resetDevice();
+                lock.lock();
+                deviceEpoch = generation;
+                continue;
+            }
             if (!active) {
                 wake.wait_for(lock, std::chrono::milliseconds(10));
                 continue;
             }
             if (written >= end || SDL_GetQueuedAudioSize(device) >= queueBytes) {
                 if (preroll) {
-                    SDL_PauseAudioDevice(device, 0);
                     preroll = false;
+                    lock.unlock();
+                    SDL_PauseAudioDevice(device, 0);
+                    lock.lock();
                 }
+                if (deviceEpoch != epoch || stop.stop_requested())
+                    continue;
                 wake.wait_for(lock, std::chrono::milliseconds(5));
                 continue;
             }
@@ -223,13 +259,12 @@ AudioMixer::~AudioMixer() = default;
 void AudioMixer::start(Time position)
 {
     std::lock_guard lock(state_->mutex);
-    if (!state_->device) {
-        state_->silentPosition = position;
+    if (state_->silent) {
+        state_->silentPosition = std::clamp(position, Time{0}, state_->duration);
         state_->silentStart = std::chrono::steady_clock::now();
         state_->active = true;
         return;
     }
-    state_->resetDevice();
     ++state_->epoch;
     state_->written = std::clamp(toFrames(position), Time{0}, state_->end);
     state_->error.clear();
@@ -243,25 +278,25 @@ void AudioMixer::stop()
     std::lock_guard lock(state_->mutex);
     ++state_->epoch;
     state_->active = false;
-    if (!state_->device)
-        return;
-    state_->resetDevice();
     state_->wake.notify_one();
 }
 
 Time AudioMixer::position() const
 {
     std::lock_guard lock(state_->mutex);
-    if (!state_->device) {
+    if (state_->silent) {
         const auto elapsed = state_->active
             ? std::chrono::duration_cast<std::chrono::microseconds>(
                 std::chrono::steady_clock::now() - state_->silentStart).count()
             : Time{0};
         return std::min(state_->duration, state_->silentPosition + elapsed);
     }
+    if (!state_->initializationError.empty())
+        throw std::runtime_error(state_->initializationError);
     if (!state_->error.empty())
         throw std::runtime_error(state_->error);
-    const auto queued = static_cast<Time>(SDL_GetQueuedAudioSize(state_->device) / frameBytes);
+    const auto queued = state_->device && state_->deviceEpoch == state_->epoch
+        ? static_cast<Time>(SDL_GetQueuedAudioSize(state_->device) / frameBytes) : Time{0};
     const auto consumed = state_->written - queued;
     return consumed >= state_->end ? state_->duration : toTime(consumed);
 }

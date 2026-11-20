@@ -63,6 +63,21 @@ int main(int argc, char** argv)
         std::this_thread::sleep_for(2ms);
         expect(silent.position() > 13 * second, "Video-only playback has a clock without an audio device");
 
+        AudioMixer missing({{project.video.parent_path() / "missing.wav", "missing", 0, 1}},
+                           worker.duration());
+        missing.start(2 * second);
+        const auto failureDeadline = Clock::now() + 1s;
+        bool reported = false;
+        while (Clock::now() < failureDeadline && !reported) {
+            try {
+                missing.position();
+            } catch (const std::runtime_error& error) {
+                reported = std::string_view(error.what()).find("Cannot open audio track") != std::string_view::npos;
+            }
+            std::this_thread::sleep_for(2ms);
+        }
+        expect(reported, "Audio initialization failure is reported back to the transport");
+
         AudioMixer mix(project.audio, worker.duration());
         mix.start(13 * second);
         const auto deadline = Clock::now() + 1s;
