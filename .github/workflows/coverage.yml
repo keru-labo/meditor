@@ -1,0 +1,56 @@
+name: Rust coverage
+on:
+  pull_request:
+    paths:
+      - 'rust/**'
+      - 'tools/coverage.sh'
+      - '.github/workflows/coverage.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'rust/**'
+      - 'tools/coverage.sh'
+      - '.github/workflows/coverage.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-coverage-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  coverage:
+    name: Rust line coverage
+    runs-on: ubuntu-latest
+    container:
+      image: debian:13.6@sha256:f324c7ff54321e8d9c588493a20244965938ce0aa50bbd1022d38010e9ffc4b1
+    timeout-minutes: 20
+    steps:
+      - name: Install test dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates curl git jq build-essential pkg-config libclang-dev libfontconfig-dev libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libsdl2-dev ffmpeg xvfb xauth libxkbcommon-x11-0 fonts-noto-cjk
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc
+        with:
+          toolchain: '1.100.0'
+          components: llvm-tools-preview
+      - uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2
+        with:
+          tool: cargo-llvm-cov@0.9.1
+      - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # v2
+        with:
+          workspaces: rust -> target/llvm-cov-target
+          shared-key: llvm-coverage
+      - name: Measure Rust coverage
+        run: bash tools/coverage.sh
+      - name: Upload coverage reports
+        if: ${{ !cancelled() && hashFiles('artifacts/coverage/summary.md') != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: rust-coverage
+          path: artifacts/coverage/
+          retention-days: 14
+          if-no-files-found: error

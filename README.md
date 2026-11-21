@@ -40,11 +40,10 @@ cargo run --manifest-path rust/Cargo.toml --locked --bin meditor
 
 ## 検証
 
-`rust` ディレクトリで受入テストを実行できます。再生制御とプロジェクトモデルの行カバレッジ、ミューテーションテストには `cargo-llvm-cov`、`llvm-tools-preview`、`cargo-mutants` を使います。
+`rust` ディレクトリで受入テストとミューテーションテストを実行できます。行カバレッジの集計範囲、CI の結果、ローカルでの再現手順は [Rust の行カバレッジ](docs/coverage.md) を参照してください。
 
 ```powershell
 cargo test --locked
-cargo llvm-cov --locked --tests --ignore-filename-regex 'src[\\/](main\.rs|audio\.rs|video\.rs|bin)' --fail-under-lines 85
 cargo mutants --output target --file src/lib.rs --file src/project.rs -- --locked
 ```
 
