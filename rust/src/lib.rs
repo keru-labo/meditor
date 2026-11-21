@@ -1,8 +1,9 @@
 //! GUI-thread state for routing seek requests and accepting decoder results.
 
 #![forbid(unsafe_code)]
-pub mod history;
 pub mod project;
+
+pub mod history;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SeekMode {
