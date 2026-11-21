@@ -6,7 +6,7 @@ meditor は、AI がゲーム実況の動画を編集する Windows 専用アプ
 
 Rust と Slint で、字幕編集、FFmpeg プレビュー、短 GOP プロキシのスクラブ、ゲーム音と複数話者の WAV のミックスを実装しています。プロジェクトは UTF-8 JSON で保存し、既存の version 1 / 2 と UTF-8 SRT を読み込めます。
 
-単一クリップを字幕付き MP4 に書き出せます。Codex App Server に指示と時刻付き字幕を渡し、単一クリップの切り出しもできます。 [手動書き出し](docs/features/video-export.md#現行プレビュー版での手動書き出し) · [Codex のセットアップ](docs/ai-selection.md)
+単一クリップを字幕付き MP4 に書き出せます。Codex App Server に指示と時刻付き字幕を渡し、単一クリップの切り出しと書き出し設定を提案できます。 [現状と不足機能](docs/editor-capability-gap.md) · [手動書き出し](docs/features/video-export.md#現行プレビュー版での手動書き出し) · [Codex のセットアップ](docs/ai-selection.md)
 
 ## ビルド
 

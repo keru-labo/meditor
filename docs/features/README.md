@@ -1,13 +1,13 @@
 # 初回リリースの機能定義
 
-meditor は、Windows で実況素材を取り込み、AI にプロンプトで編集を依頼し、字幕を焼き込んだ動画ファイルまで作れる。制作者は途中でも保存後でも、同じプロジェクトを GUI やチャットから編集できる。 [製品要件](../requirements.md) · [編集用語](../ubiquitous-language.md)
+初回リリースでは、Windows で実況素材を取り込み、AI にプロンプトで編集を依頼し、字幕を焼き込んだ動画ファイルまで作れるようにする。制作者は途中でも保存後でも、同じプロジェクトを GUI やチャットから編集できる。実装済みの操作と機能の差分は、現状の確認ページに記録する。 [製品要件](../requirements.md) · [編集用語](../ubiquitous-language.md) · [プレビュー版の現状と不足機能](../editor-capability-gap.md)
 
-## 利用の流れ
+## 初回リリースでの利用の流れ
 
 1. ゲーム実況の動画と音声を取り込む。音声が混ざっていれば、必要に応じて PC 内で分離する。
 2. 日本語の文字起こしと話者識別を PC 内で行い、素材時刻に対応した発話を得る。チャットから範囲や音声トラックを指定して再処理できる。
 3. チャットで、指定した場面の切り出し、複数の見どころのまとめ、または無言・待ち時間を詰めた投稿用動画を依頼する。指示に応じて、タイムライン、字幕、音声、映像処理を変更できる。
-4. 必要に応じて、GUI またはチャットで編集を続ける。FFmpeg 設定画面では項目と値を選び、ノード画面では映像・音声の処理を分岐・合成できる。
+4. GUI またはチャットで、クリップの順序、ゲーム音と話者の音量、字幕の本文・フォント・色・縁取りを整える。縦長などの出力キャンバスで、映像の構図と字幕の見た目を確認する。FFmpeg 設定画面では項目と値を選び、ノード画面では映像・音声の処理を分岐・合成できる。
 5. 依頼に応じて、AI がそのまま書き出すか、人が確認・修正してから書き出す。会話と操作の履歴はプロジェクトを開き直した後も参照できる。
 
 ## 機能と受入シナリオ
@@ -15,12 +15,15 @@ meditor は、Windows で実況素材を取り込み、AI にプロンプトで�
 | 機能 | 定義 | BDD |
 | --- | --- | --- |
 | 素材取り込み・音声分離 | [機能定義](media-import.md) | [シナリオ](media-import.feature) |
-| 文字起こし・話者識別・字幕 | [機能定義](transcription.md) | [シナリオ](transcription.feature) |
+| 文字起こし・話者識別 | [機能定義](transcription.md) | [シナリオ](transcription.feature) |
+| 字幕の本文・区間・スタイル | [機能定義](subtitle-editing.md) | [シナリオ](subtitle-editing.feature) |
+| 映像クリップ・タイムライン | [機能定義](video-timeline.md) | [シナリオ](video-timeline.feature) |
+| 音声トラック・ミックス編集 | [機能定義](audio-editing.md) | [シナリオ](audio-editing.feature) |
 | チャットでの AI 編集 | [機能定義](chat-editing.md) | [シナリオ](chat-editing.feature) |
 | 単一クリップの切り出しと修正 | [詳細定義](ai-clip-editing.md) | [シナリオ](ai-clip-editing.feature) |
 | FFmpeg 設定・ノード編集 | [機能定義](ffmpeg-controls.md) | [シナリオ](ffmpeg-controls.feature) |
 | チャット履歴・作業履歴 | [機能定義](edit-history.md) | [シナリオ](edit-history.feature) |
-| 動画の書き出し | [機能定義](video-export.md) | [シナリオ](video-export.feature) |
+| 映像キャンバス・動画の書き出し | [機能定義](video-export.md) | [シナリオ](video-export.feature) |
 | Codex App Server への接続・送信許可 | [機能定義](ai-connections.md) | [シナリオ](ai-connections.feature) |
 
 ## 仕様が未確定の項目
