@@ -47,4 +47,4 @@ cargo test --locked
 cargo mutants --output target --file src/lib.rs --file src/project.rs -- --locked
 ```
 
-[製品要件](docs/requirements.md) · [編集用語](docs/ubiquitous-language.md) · [機能定義](docs/features/ai-clip-editing.md) · [設計](docs/design.md) · [受入条件](docs/acceptance.md) · [性能計測](docs/performance.md) · [Rust 採用 ADR](docs/adr/0001-rust-windows-editor.md) · [Rust 版への切り替え ADR](docs/adr/0002-rust-editor-cutover.md)
+[製品要件](docs/requirements.md) · [編集用語](docs/ubiquitous-language.md) · [初回リリースの機能定義と BDD](docs/features/README.md) · [設計](docs/design.md) · [受入条件](docs/acceptance.md) · [性能計測](docs/performance.md) · [Rust 採用 ADR](docs/adr/0001-rust-windows-editor.md) · [Rust 版への切り替え ADR](docs/adr/0002-rust-editor-cutover.md)
