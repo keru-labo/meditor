@@ -21,7 +21,6 @@ serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = { version = "=1.0.154", features = ["raw_value"] }
 slint = { version = "=1.15.1", default-features = false, features = ["backend-winit", "renderer-software", "compat-1-2", "accessibility"] }
 tempfile = "=3.27.0"
-ureq = { version = "=3.5.2", default-features = false, features = ["rustls"] }
 
 [build-dependencies]
 slint-build = "=1.15.1"
