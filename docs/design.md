@@ -1,5 +1,7 @@
 # エディターの設計
 
+初回リリースで扱う編集ルールと操作は、[編集ドメイン設計](design/editing-domain.md) と [画面と操作の設計](design/editor-screens.md) に記載する。このページではプレビュー版の構成と実装を扱う。
+
 ## Rust と Slint
 
 エディターは Rust、UI は Slint と winit で実装する。採用と切り替えの記録は [ADR 0001](adr/0001-rust-windows-editor.md) と [ADR 0002](adr/0002-rust-editor-cutover.md) にある。
