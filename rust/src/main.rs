@@ -1,5 +1,7 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod export;
+
 mod audio;
 mod video;
 
@@ -107,6 +109,7 @@ struct Editor {
     leaving: Option<Leave>,
     metrics: Metrics,
     smoke: Option<Smoke>,
+    export_result: Option<std::sync::mpsc::Receiver<Result<PathBuf>>>,
 }
 
 struct Smoke {
@@ -674,6 +677,55 @@ impl Editor {
         ui.set_measuring(self.metrics.enabled);
     }
 
+    fn export_video(&mut self, ui: &EditorWindow) -> Result<()> {
+        let Some(loaded) = &self.loaded else {
+            return Ok(());
+        };
+        if self.export_result.is_some() {
+            return Ok(());
+        }
+        let Some(destination) = rfd::FileDialog::new()
+            .set_title("字幕付き MP4 を書き出す")
+            .add_filter("MP4", &["mp4"])
+            .set_file_name("export.mp4")
+            .save_file()
+        else {
+            return Ok(());
+        };
+        let snapshot = export::ExportSnapshot::capture(
+            &loaded.project,
+            loaded.video.duration,
+            loaded.video.source_stream,
+            loaded.video.source_origin_us,
+        );
+        let (finished, result) = std::sync::mpsc::channel();
+        std::thread::Builder::new()
+            .name("meditor-export".into())
+            .spawn(move || {
+                let _ = finished.send(snapshot.write(destination));
+            })?;
+        self.export_result = Some(result);
+        ui.set_exporting(true);
+        ui.set_status("字幕付き MP4 を書き出し中".into());
+        Ok(())
+    }
+
+    fn poll_export(&mut self, ui: &EditorWindow) {
+        use std::sync::mpsc::TryRecvError;
+        let Some(export) = &self.export_result else {
+            return;
+        };
+        let status = match export.try_recv() {
+            Ok(Ok(path)) => format!("書き出しました: {}", path.display()),
+            Ok(Err(error)) => format!("書き出しに失敗しました: {error:#}"),
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => "書き出し処理が異常終了しました".to_string(),
+        };
+        self.export_result = None;
+        ui.set_exporting(false);
+        ui.set_status(status.into());
+    }
+
     fn save_metrics(&mut self, ui: &EditorWindow) -> Result<()> {
         self.metrics.enabled = false;
         ui.set_measuring(false);
@@ -759,6 +811,7 @@ fn bind(ui: &EditorWindow, state: &Rc<RefCell<Editor>>) {
         editor.toggle_measurement(&ui);
         Ok(())
     });
+    callback!(on_export_video, |editor, ui| editor.export_video(&ui));
     callback!(on_toggle_playback, |editor, ui| {
         editor.toggle_play(&ui);
         Ok(())
@@ -826,6 +879,10 @@ fn bind(ui: &EditorWindow, state: &Rc<RefCell<Editor>>) {
     ui.window().on_close_requested(move || {
         if let Some(ui) = window.upgrade() {
             let mut editor = state.borrow_mut();
+            if editor.export_result.is_some() {
+                ui.set_status("書き出しの完了後に閉じてください".into());
+                return slint::CloseRequestResponse::KeepWindowShown;
+            }
             if editor.loaded.as_ref().is_some_and(|loaded| loaded.dirty) {
                 editor.leaving = Some(Leave::Quit);
                 ui.set_confirm_discard(true);
@@ -907,6 +964,7 @@ fn main() -> Result<()> {
         timer.start(TimerMode::Repeated, TICK, move || {
             if let Some(ui) = window.upgrade() {
                 let mut editor = state.borrow_mut();
+                editor.poll_export(&ui);
                 if let Err(failure) = editor.tick(&ui) {
                     if editor.smoke.is_some() {
                         *error.borrow_mut() = Some(failure);

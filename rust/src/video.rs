@@ -136,6 +136,10 @@ impl Decoder {
         Ok(None)
     }
 
+    fn origin_us(&self) -> i64 {
+        ffmpeg::Rescale::rescale(&self.origin, self.time_base, ffmpeg::rescale::TIME_BASE)
+    }
+
     fn at(
         &mut self,
         target: i64,
@@ -148,9 +152,7 @@ impl Decoder {
             .last_target
             .is_none_or(|last| target < last || target - last > 300_000)
         {
-            let origin =
-                ffmpeg::Rescale::rescale(&self.origin, self.time_base, ffmpeg::rescale::TIME_BASE);
-            let timestamp = origin.saturating_add(target);
+            let timestamp = self.origin_us().saturating_add(target);
             self.input.seek(timestamp, ..timestamp)?;
             self.codec.flush();
             self.current = None;
@@ -258,6 +260,8 @@ struct Shared {
 
 pub struct VideoWorker {
     pub duration: i64,
+    pub source_stream: usize,
+    pub source_origin_us: i64,
     shared: Arc<Shared>,
     worker: Option<JoinHandle<()>>,
 }
@@ -277,7 +281,14 @@ impl VideoWorker {
                         return;
                     }
                 };
-                if opened.send(Ok(original.duration)).is_err() {
+                if opened
+                    .send(Ok((
+                        original.duration,
+                        original.stream,
+                        original.origin_us(),
+                    )))
+                    .is_err()
+                {
                     return;
                 }
                 let mut proxy_decoder = None;
@@ -322,8 +333,10 @@ impl VideoWorker {
                 }
             })?;
         match response.recv() {
-            Ok(Ok(duration)) => Ok(Self {
+            Ok(Ok((duration, source_stream, source_origin_us))) => Ok(Self {
                 duration,
+                source_stream,
+                source_origin_us,
                 shared,
                 worker: Some(worker),
             }),

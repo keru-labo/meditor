@@ -19,6 +19,7 @@ export component EditorWindow inherits Window {
     in property <bool> has-proxy;
     in-out property <bool> use-proxy;
     in property <bool> playing;
+    in property <bool> exporting;
     in property <bool> measuring;
     in property <image> frame;
     in property <int> playhead;
@@ -41,6 +42,7 @@ export component EditorWindow inherits Window {
     callback choose-proxy();
     callback toggle-playback();
     callback toggle-measurement();
+    callback export-video();
     callback save-metrics();
     callback select-caption(int);
     callback goto-caption(int);
@@ -64,6 +66,11 @@ export component EditorWindow inherits Window {
             Button { text: "保存"; enabled: root.has-project; clicked => { root.save-project(); } }
             Button { text: "SRT 読込"; enabled: root.has-project; clicked => { root.import-captions(); } }
             Button { text: "プロキシを選択"; enabled: root.has-project; clicked => { root.choose-proxy(); } }
+            Button {
+                text: root.exporting ? "書き出し中" : "書き出す";
+                enabled: root.has-project && !root.exporting;
+                clicked => { root.export-video(); }
+            }
             Rectangle { horizontal-stretch: 1; }
             Button { text: "このアプリについて"; clicked => { root.show-about = true; } }
             Text { text: root.filename; color: #a6afc3; vertical-alignment: center; overflow: elide; max-width: 210px; }

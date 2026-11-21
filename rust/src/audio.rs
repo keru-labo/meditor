@@ -1,9 +1,9 @@
 use anyhow::{Context, Result, anyhow, ensure};
-use meditor_playback::project::{SECOND, Track};
+use meditor_playback::project::{ClipRange, SECOND, Track};
 use sdl2::audio::{AudioQueue, AudioSpecDesired};
 use std::{
     fs::File,
-    io::BufReader,
+    io::{BufReader, Write},
     sync::{Arc, Mutex, mpsc},
     thread::{self, JoinHandle},
     time::{Duration, Instant},
@@ -59,6 +59,54 @@ impl Wave {
         }
         Ok(())
     }
+}
+
+fn mix_block(waves: &mut [Wave], first: i64, frames: usize) -> Result<[i16; BLOCK * CHANNELS]> {
+    let mut mixed = [0.0; BLOCK * CHANNELS];
+    for wave in waves {
+        wave.mix(first, frames, &mut mixed)?;
+    }
+    let mut output = [0; BLOCK * CHANNELS];
+    for (out, sample) in output.iter_mut().zip(mixed) {
+        *out = sample
+            .clamp(f32::from(i16::MIN), f32::from(i16::MAX))
+            .round() as i16;
+    }
+    Ok(output)
+}
+
+fn first_sample(position_us: i64) -> i64 {
+    (position_us * RATE + SECOND - 1) / SECOND
+}
+
+pub(crate) fn write_export_mix(
+    tracks: Vec<Track>,
+    range: ClipRange,
+    mut output: impl Write,
+) -> Result<()> {
+    let mut waves = tracks
+        .into_iter()
+        .map(Wave::open)
+        .collect::<Result<Vec<_>>>()?;
+    let end = first_sample(range.source_end_us);
+    let mut first = first_sample(range.source_start_us);
+    let mut bytes = [0; BLOCK * CHANNELS * size_of::<i16>()];
+    while first < end {
+        let frames = (end - first).min(BLOCK as i64) as usize;
+        let mixed = mix_block(&mut waves, first, frames)?;
+        let byte_count = frames * CHANNELS * size_of::<i16>();
+        for (chunk, sample) in bytes[..byte_count]
+            .as_chunks_mut::<2>()
+            .0
+            .iter_mut()
+            .zip(mixed)
+        {
+            *chunk = sample.to_le_bytes();
+        }
+        output.write_all(&bytes[..byte_count])?;
+        first += frames as i64;
+    }
+    Ok(())
 }
 
 enum Command {
@@ -178,7 +226,7 @@ fn run(
         })
         .transpose()
         .map_err(anyhow::Error::msg)?;
-    let end_frame = (end * RATE + SECOND - 1) / SECOND;
+    let end_frame = first_sample(end);
     let mut active: Option<Playback> = None;
     loop {
         let command = if active.is_none() {
@@ -209,7 +257,7 @@ fn run(
                         epoch,
                         start,
                         began: Instant::now(),
-                        written: (start * RATE + SECOND - 1) / SECOND,
+                        written: first_sample(start),
                         preroll: true,
                     });
                 }
@@ -226,16 +274,7 @@ fn run(
                 if count == 0 {
                     break;
                 }
-                let mut mixed = [0.0; BLOCK * CHANNELS];
-                for wave in &mut waves {
-                    wave.mix(playback.written, count, &mut mixed)?;
-                }
-                let mut output = [0; BLOCK * CHANNELS];
-                for (out, sample) in output.iter_mut().zip(mixed) {
-                    *out = sample
-                        .clamp(f32::from(i16::MIN), f32::from(i16::MAX))
-                        .round() as i16;
-                }
+                let output = mix_block(&mut waves, playback.written, count)?;
                 let clock = clock.lock().unwrap();
                 if clock.epoch != playback.epoch {
                     break;
