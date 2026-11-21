@@ -15,6 +15,69 @@ const CAPTION_HEADER: &str = "[Script Info]\n\
     [Events]\n\
     Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text\n";
 
+#[derive(Clone, Copy, Default)]
+pub(crate) struct ExportSettings {
+    quality: Quality,
+    canvas: Canvas,
+}
+
+#[derive(Clone, Copy, Default)]
+enum Quality {
+    #[default]
+    Standard,
+    High,
+    Compact,
+}
+
+#[derive(Clone, Copy, Default)]
+enum Canvas {
+    #[default]
+    Source,
+    Landscape,
+    Portrait,
+}
+
+impl ExportSettings {
+    pub(crate) fn from_selection(quality: i32, canvas: i32) -> Result<Self> {
+        let quality = match quality {
+            0 => Quality::Standard,
+            1 => Quality::High,
+            2 => Quality::Compact,
+            _ => anyhow::bail!("書き出し画質を選択してください"),
+        };
+        let canvas = match canvas {
+            0 => Canvas::Source,
+            1 => Canvas::Landscape,
+            2 => Canvas::Portrait,
+            _ => anyhow::bail!("書き出しの縦横比を選択してください"),
+        };
+        Ok(Self { quality, canvas })
+    }
+
+    fn crf(self) -> &'static str {
+        match self.quality {
+            Quality::Standard => "20",
+            Quality::High => "18",
+            Quality::Compact => "26",
+        }
+    }
+
+    fn video_filter(self) -> String {
+        let (width, height) = match self.canvas {
+            Canvas::Source => return "pad=ceil(iw/2)*2:ceil(ih/2)*2".to_owned(),
+            Canvas::Landscape => (1280, 720),
+            Canvas::Portrait => (720, 1280),
+        };
+        // Fit the source's display aspect ratio, including non-square source pixels.
+        // Round down to even dimensions for YUV 4:2:0, then pad to fill the canvas.
+        format!(
+            "scale=w='max(2,trunc(min({width},{height}*dar)/2)*2)':\
+             h='max(2,trunc(min({height},{width}/dar)/2)*2)',\
+             setsar=1,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2"
+        )
+    }
+}
+
 pub(crate) struct ExportSnapshot {
     video: PathBuf,
     stream: usize,
@@ -22,10 +85,17 @@ pub(crate) struct ExportSnapshot {
     range: ClipRange,
     audio: Vec<Track>,
     captions: Vec<Caption>,
+    settings: ExportSettings,
 }
 
 impl ExportSnapshot {
-    pub(crate) fn capture(project: &Project, duration: i64, stream: usize, origin_us: i64) -> Self {
+    pub(crate) fn capture(
+        project: &Project,
+        duration: i64,
+        stream: usize,
+        origin_us: i64,
+        settings: ExportSettings,
+    ) -> Self {
         let range = project.playback_range(duration);
         let captions = project
             .captions
@@ -40,6 +110,7 @@ impl ExportSnapshot {
             range,
             audio: project.audio.clone(),
             captions,
+            settings,
         }
     }
 
@@ -98,7 +169,7 @@ impl ExportSnapshot {
                 .args(["-f", "s16le", "-ar", "48000", "-ac", "2", "-i", "pipe:0"])
                 .args(["-map", "1:a:0", "-c:a", "aac", "-b:a", "192k"]);
         }
-        let mut video_filter = String::from("pad=ceil(iw/2)*2:ceil(ih/2)*2");
+        let mut video_filter = self.settings.video_filter();
         if !self.captions.is_empty() {
             fs::write(
                 workspace.path().join("captions.ass"),
@@ -122,7 +193,7 @@ impl ExportSnapshot {
                 "-preset",
                 "veryfast",
                 "-crf",
-                "20",
+                self.settings.crf(),
                 "-pix_fmt",
                 "yuv420p",
                 "-movflags",
@@ -322,7 +393,8 @@ mod tests {
             speaker: "話者A".into(),
             text: "{\\an9}実況\nSecond line".into(),
         });
-        let snapshot = ExportSnapshot::capture(&project, 3_000_000, 0, 0);
+        let snapshot =
+            ExportSnapshot::capture(&project, 3_000_000, 0, 0, ExportSettings::default());
         project.captions.clear();
         project.audio.clear();
         let output = snapshot.write(directory.path().join("書き出し '日本語'.mp4"))?;
@@ -384,11 +456,97 @@ mod tests {
         let mut file = File::create(&existing)?;
         file.write_all(b"keep this file")?;
         drop(file);
-        let error = ExportSnapshot::capture(&project, 3_000_000, 0, 0)
+        let error = ExportSnapshot::capture(&project, 3_000_000, 0, 0, ExportSettings::default())
             .write(existing.clone())
             .unwrap_err();
         assert!(error.to_string().contains("上書き"));
         assert_eq!(fs::read(existing)?, b"keep this file");
+        Ok(())
+    }
+
+    #[test]
+    fn export_settings_validate_selections_and_preserve_the_default() {
+        let standard = ExportSettings::from_selection(0, 0).unwrap();
+        assert_eq!(standard.crf(), "20");
+        assert_eq!(standard.video_filter(), "pad=ceil(iw/2)*2:ceil(ih/2)*2");
+        assert_eq!(ExportSettings::from_selection(2, 1).unwrap().crf(), "26");
+        assert!(ExportSettings::from_selection(3, 0).is_err());
+        assert!(ExportSettings::from_selection(0, -1).is_err());
+    }
+
+    #[test]
+    fn portrait_export_keeps_display_aspect_and_applies_chosen_quality() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let source = directory.path().join("anamorphic.mp4");
+        ffmpeg(
+            &[
+                "-f",
+                "lavfi",
+                "-i",
+                "color=white:size=96x64:rate=5:duration=0.4",
+                "-vf",
+                "setsar=3/2",
+                "-c:v",
+                "libx264",
+            ],
+            &source,
+        )?;
+        let project = Project::new(source, Vec::new())?;
+        let settings = ExportSettings::from_selection(1, 2)?;
+        let output = ExportSnapshot::capture(&project, 400_000, 0, 0, settings)
+            .write(directory.path().join("portrait.mp4"))?;
+
+        ffmpeg_next::init()?;
+        let input = ffmpeg_next::format::input(&output)?;
+        let stream = input
+            .streams()
+            .best(ffmpeg_next::media::Type::Video)
+            .unwrap();
+        let decoder = ffmpeg_next::codec::context::Context::from_parameters(stream.parameters())?
+            .decoder()
+            .video()?;
+        assert_eq!((decoder.width(), decoder.height()), (720, 1280));
+
+        let output_path = output.to_str().unwrap();
+        let pixels = ffmpeg(
+            &[
+                "-i",
+                output_path,
+                "-frames:v",
+                "1",
+                "-pix_fmt",
+                "gray",
+                "-f",
+                "rawvideo",
+                "-threads",
+                "1",
+            ],
+            Path::new("pipe:1"),
+        )?;
+        assert_eq!(pixels.len(), 720 * 1280);
+        assert!(
+            pixels[430 * 720 + 360] < 10,
+            "anamorphic image should fit inside the black bars"
+        );
+        assert!(
+            pixels[500 * 720 + 360] > 200,
+            "fitted image must be visible"
+        );
+
+        let encoded = ffmpeg(
+            &[
+                "-i",
+                output_path,
+                "-map",
+                "0:v:0",
+                "-c:v",
+                "copy",
+                "-f",
+                "h264",
+            ],
+            Path::new("pipe:1"),
+        )?;
+        assert!(String::from_utf8_lossy(&encoded).contains("crf=18.0"));
         Ok(())
     }
 }
