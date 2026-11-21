@@ -1,5 +1,8 @@
 use anyhow::{Result, ensure};
-use meditor_playback::project::{Caption, ClipRange};
+use meditor_playback::{
+    ai::ClipSelection,
+    project::{Caption, ClipRange},
+};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -25,7 +28,7 @@ impl SelectionInput {
 
 pub struct SelectionResult {
     pub input: SelectionInput,
-    pub range: Result<Option<ClipRange>>,
+    pub selection: Result<Option<ClipSelection>>,
 }
 
 struct PendingSelection {
@@ -50,7 +53,9 @@ impl ChatSelection {
     pub fn start(
         &mut self,
         input: SelectionInput,
-        select: impl FnOnce(&SelectionInput, &AtomicBool) -> Result<Option<ClipRange>> + Send + 'static,
+        select: impl FnOnce(&SelectionInput, &AtomicBool) -> Result<Option<ClipSelection>>
+        + Send
+        + 'static,
     ) -> Result<()> {
         ensure!(
             !self.is_running(),
@@ -62,8 +67,8 @@ impl ChatSelection {
         std::thread::Builder::new()
             .name("ai-clip-selection".into())
             .spawn(move || {
-                let range = select(&input, &worker_cancelled);
-                let _ = send.send(SelectionResult { input, range });
+                let selection = select(&input, &worker_cancelled);
+                let _ = send.send(SelectionResult { input, selection });
             })?;
         self.0 = Some(PendingSelection { result, cancelled });
         Ok(())
@@ -118,7 +123,10 @@ mod tests {
         };
         send.send(SelectionResult {
             input,
-            range: Ok(Some(range(20, 30))),
+            selection: Ok(Some(ClipSelection {
+                range: range(20, 30),
+                export: None,
+            })),
         })
         .ok()
         .unwrap();

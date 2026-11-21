@@ -615,7 +615,7 @@ mod tests {
         ] {
             responses.push(json!({"method":"item/completed","params":{
                 "threadId":thread_id,"turnId":"turn-1",
-                "item":{"type":"agentMessage","phase":phase,"text":"{\"clip\":null}"}
+                "item":{"type":"agentMessage","phase":phase,"text":"{\"clip\":null,\"export\":null}"}
             }}));
         }
         responses.push(json!({"id": 5, "result": {"turn": {"id":"turn-1"}}}));
@@ -623,7 +623,7 @@ mod tests {
             "threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}
         }}));
         let (result, sent) = run(cwd.path(), responses);
-        assert_eq!(result.unwrap(), r#"{"clip":null}"#);
+        assert_eq!(result.unwrap(), r#"{"clip":null,"export":null}"#);
         assert_eq!(
             sent.iter()
                 .map(|value| value["method"].as_str().unwrap())

@@ -152,6 +152,7 @@ impl Editor {
         self.stop(ui);
         self.invalidate_chat(ui, "プロジェクトが変わったため AI の結果は反映しません");
         ui.set_ai_prompt("".into());
+        ui.set_ai_export_ready(false);
         if !self.chat.is_running() {
             ui.set_ai_status("".into());
         }
@@ -471,6 +472,10 @@ impl Editor {
         let range = loaded.range();
         let ai_source_available = loaded.project.clip.is_none();
         ui.set_ai_source_available(ai_source_available);
+        if ai_source_available && ui.get_ai_export_ready() {
+            ui.set_ai_export_ready(false);
+            ui.set_ai_status("".into());
+        }
         if !ai_source_available {
             self.invalidate_chat(ui, "素材区間が変わったため AI の結果は反映しません");
         }
@@ -1023,16 +1028,18 @@ impl Editor {
             ui.set_ai_status("編集内容が変わったため AI の結果は反映しません".into());
             return Ok(());
         }
-        let Some(range) = result.range? else {
+        let Some(selection) = result.selection? else {
             ui.set_ai_status("指示に合う区間が見つかりませんでした".into());
             return Ok(());
         };
+        let range = selection.range;
         ensure!(
             range.valid_for(loaded.video.duration)
                 && range.source_start_us >= result.input.bounds.source_start_us
                 && range.source_end_us <= result.input.bounds.source_end_us,
             "AI が対象区間外の時刻を返しました"
         );
+        let whole_source = range == loaded.range();
         // Use the same checked apply path as a manually entered clip edit.
         ui.set_clip_start(seconds_text(range.source_start_us).into());
         ui.set_clip_end(seconds_text(range.source_end_us).into());
@@ -1042,14 +1049,20 @@ impl Editor {
             ui.set_clip_end(end.into());
             return Err(error);
         }
-        ui.set_ai_status(
+        if let Some(preferences) = selection.export {
+            ui.set_ai_export_selection(preferences.into());
+        }
+        ui.set_ai_export_ready(selection.export.is_some());
+        let status = if whole_source {
+            "素材全体を選びました".to_owned()
+        } else {
             format!(
                 "素材の {} – {} を区間に反映しました",
                 timestamp(range.source_start_us),
                 timestamp(range.source_end_us),
             )
-            .into(),
-        );
+        };
+        ui.set_ai_status(status.into());
         Ok(())
     }
 }

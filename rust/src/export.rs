@@ -1,6 +1,10 @@
+use crate::ExportSelection;
 use crate::audio::write_export_mix;
 use anyhow::{Context, Result, ensure};
-use meditor_playback::project::{Caption, ClipRange, Project, SECOND, Track};
+use meditor_playback::{
+    ai::{ExportCanvas, ExportPreferences, ExportQuality},
+    project::{Caption, ClipRange, Project, SECOND, Track},
+};
 use std::{
     fs::{self, File},
     path::PathBuf,
@@ -35,6 +39,23 @@ enum Canvas {
     Source,
     Landscape,
     Portrait,
+}
+
+impl From<ExportPreferences> for ExportSelection {
+    fn from(preferences: ExportPreferences) -> Self {
+        Self {
+            quality: match preferences.quality {
+                None | Some(ExportQuality::Standard) => 0,
+                Some(ExportQuality::High) => 1,
+                Some(ExportQuality::Compact) => 2,
+            },
+            canvas: match preferences.canvas {
+                None | Some(ExportCanvas::Source) => 0,
+                Some(ExportCanvas::Landscape) => 1,
+                Some(ExportCanvas::Portrait) => 2,
+            },
+        }
+    }
 }
 
 impl ExportSettings {
@@ -472,6 +493,29 @@ mod tests {
         assert_eq!(ExportSettings::from_selection(2, 1).unwrap().crf(), "26");
         assert!(ExportSettings::from_selection(3, 0).is_err());
         assert!(ExportSettings::from_selection(0, -1).is_err());
+    }
+
+    #[test]
+    fn ai_proposal_prefills_the_same_choices_used_for_export() -> Result<()> {
+        let proposed = ExportSelection::from(ExportPreferences {
+            quality: Some(ExportQuality::High),
+            canvas: Some(ExportCanvas::Portrait),
+        });
+        let settings = ExportSettings::from_selection(proposed.quality, proposed.canvas)?;
+        assert_eq!(settings.crf(), "18");
+        assert!(settings.video_filter().contains("pad=720:1280:"));
+
+        let proposed = ExportSelection::from(ExportPreferences {
+            quality: None,
+            canvas: None,
+        });
+        let settings = ExportSettings::from_selection(proposed.quality, proposed.canvas)?;
+        assert_eq!(settings.crf(), "20");
+        assert_eq!(
+            settings.video_filter(),
+            ExportSettings::default().video_filter()
+        );
+        Ok(())
     }
 
     #[test]
