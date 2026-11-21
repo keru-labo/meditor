@@ -160,3 +160,55 @@ fn seconds_are_parsed_without_floating_point_rounding() {
         assert_eq!(parse_seconds(invalid), None, "{invalid}");
     }
 }
+
+#[test]
+fn roundtrip_orders_by_start_and_preserves_source_order_for_equal_starts() -> anyhow::Result<()> {
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("caption-order.json");
+    let mut project = Project::new(directory.path().join("素材.mp4"), Vec::new())?;
+    let captions = [
+        Caption {
+            id: "first".into(),
+            start_us: 0,
+            end_us: 500_000,
+            speaker: "話者 A".into(),
+            text: "一行目\n二行目".into(),
+        },
+        Caption {
+            id: "later".into(),
+            start_us: 1_000_000,
+            end_us: 2_000_000,
+            speaker: "話者 A".into(),
+            text: "続き".into(),
+        },
+        Caption {
+            id: "same-start".into(),
+            start_us: 0,
+            end_us: 200_000,
+            speaker: "話者 B".into(),
+            text: "同じ開始時刻".into(),
+        },
+    ];
+
+    for order in [
+        [0, 1, 2],
+        [0, 2, 1],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+    ] {
+        project.captions = order.map(|index| captions[index].clone()).into();
+        project.save(&path)?;
+
+        let actual = Project::load(&path)?;
+        let expected: Vec<_> = order
+            .into_iter()
+            .filter(|&index| index != 1)
+            .chain([1])
+            .map(|index| captions[index].clone())
+            .collect();
+        assert_eq!(actual.captions, expected, "input order: {order:?}");
+    }
+    Ok(())
+}
