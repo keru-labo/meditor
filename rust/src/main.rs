@@ -3,6 +3,7 @@
 mod export;
 
 mod audio;
+mod caption_overlay;
 mod video;
 
 use anyhow::{Context, Result, ensure};
@@ -98,6 +99,7 @@ struct Editor {
     loaded: Option<Loaded>,
     captions: Rc<VecModel<CaptionRow>>,
     selected: Option<usize>,
+    caption_overlay: caption_overlay::CaptionOverlay,
     seek: SeekController,
     position: i64,
     resume_pending: bool,
@@ -137,6 +139,7 @@ impl Editor {
         self.scrub_pending = None;
         ui.set_frame(slint::Image::default());
         self.last_frame = None;
+        self.caption_overlay.clear_frame();
         self.metrics = Metrics::default();
         ui.set_measuring(false);
         ui.set_has_project(true);
@@ -287,6 +290,11 @@ impl Editor {
             loaded.project.captions.iter().map(caption_row),
         ));
         ui.set_captions(self.captions.clone().into());
+        ui.set_preview_caption(
+            self.caption_overlay
+                .rebuild(&loaded.project.captions)
+                .into(),
+        );
         self.selected = None;
         ui.set_selected(-1);
         ui.set_speaker_text("".into());
@@ -339,6 +347,9 @@ impl Editor {
         {
             self.captions
                 .set_row_data(index, caption_row(&loaded.project.captions[index]));
+            if let Some(text) = self.caption_overlay.edit(&loaded.project.captions, index) {
+                ui.set_preview_caption(text.into());
+            }
             loaded.dirty = true;
             self.refresh_history_controls(ui);
             self.metrics.record(|| json!({"event":"caption_edit_dispatch", "us": began.elapsed().as_micros() as u64}));
@@ -414,6 +425,9 @@ impl Editor {
             EditTarget::Caption(index) => {
                 self.captions
                     .set_row_data(index, caption_row(&loaded.project.captions[index]));
+                if let Some(text) = self.caption_overlay.edit(&loaded.project.captions, index) {
+                    ui.set_preview_caption(text.into());
+                }
                 if self.selected == Some(index) {
                     self.select(ui, index as i32);
                 }
@@ -626,6 +640,12 @@ impl Editor {
         let loaded = self.loaded.as_mut().unwrap();
         let range = loaded.range();
         let pts = frame.pts - range.source_start_us;
+        if let Some(text) = self
+            .caption_overlay
+            .present(&loaded.project.captions, pts.max(0))
+        {
+            ui.set_preview_caption(text.into());
+        }
         if self.scrubbing {
             self.metrics.record(|| {
                 json!({
