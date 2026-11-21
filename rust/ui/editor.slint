@@ -1,4 +1,5 @@
 import { AboutSlint, Button, CheckBox, LineEdit, ListView, TextEdit } from "std-widgets.slint";
+import { ExportSelection, ExportSettings } from "export-settings.slint";
 
 export struct CaptionRow {
     time-label: string,
@@ -46,7 +47,7 @@ export component EditorWindow inherits Window {
     callback choose-proxy();
     callback toggle-playback();
     callback toggle-measurement();
-    callback export-video();
+    callback export-video(ExportSelection);
     callback save-metrics();
     callback transcribe-audio();
     callback select-caption(int);
@@ -78,7 +79,7 @@ export component EditorWindow inherits Window {
             Button {
                 text: root.exporting ? "書き出し中" : "書き出す";
                 enabled: root.has-project && !root.exporting;
-                clicked => { root.export-video(); }
+                clicked => { export-settings.show(); }
             }
             Rectangle { horizontal-stretch: 1; }
             Button { text: "このアプリについて"; clicked => { root.show-about = true; } }
@@ -246,6 +247,11 @@ export component EditorWindow inherits Window {
                 clicked => { root.transcribe-audio(); }
             }
         }
+    }
+    export-settings := ExportSettings {
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+        accepted(selection) => { root.export-video(selection); }
     }
     if root.show-about: Rectangle {
         background: #b0101219;

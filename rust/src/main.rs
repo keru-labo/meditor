@@ -855,13 +855,14 @@ impl Editor {
         ui.set_measuring(self.metrics.enabled);
     }
 
-    fn export_video(&mut self, ui: &EditorWindow) -> Result<()> {
+    fn export_video(&mut self, ui: &EditorWindow, selection: ExportSelection) -> Result<()> {
         let Some(loaded) = &self.loaded else {
             return Ok(());
         };
         if self.export_result.is_some() {
             return Ok(());
         }
+        let settings = export::ExportSettings::from_selection(selection.quality, selection.canvas)?;
         let Some(destination) = rfd::FileDialog::new()
             .set_title("字幕付き MP4 を書き出す")
             .add_filter("MP4", &["mp4"])
@@ -875,6 +876,7 @@ impl Editor {
             loaded.video.duration,
             loaded.video.source_stream,
             loaded.video.source_origin_us,
+            settings,
         );
         let (finished, result) = std::sync::mpsc::channel();
         std::thread::Builder::new()
@@ -989,7 +991,8 @@ fn bind(ui: &EditorWindow, state: &Rc<RefCell<Editor>>) {
         editor.toggle_measurement(&ui);
         Ok(())
     });
-    callback!(on_export_video, |editor, ui| editor.export_video(&ui));
+    callback!(on_export_video, |editor, ui, selection| editor
+        .export_video(&ui, selection));
     callback!(on_toggle_playback, |editor, ui| {
         editor.toggle_play(&ui);
         Ok(())
