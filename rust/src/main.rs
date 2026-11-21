@@ -3,8 +3,11 @@
 mod audio;
 mod video;
 
+mod chat;
+
 use anyhow::{Context, Result, ensure};
 use audio::AudioMixer;
+use chat::{ChatSelection, SelectionInput};
 use meditor_playback::{
     SeekController, SeekMode, VideoSource,
     project::{ClipRange, Project, SECOND, Track, import_srt, parse_seconds},
@@ -104,6 +107,7 @@ struct Editor {
     last_scrub_send: Option<Instant>,
     last_play_send: Option<Instant>,
     last_frame: Option<Arc<VideoFrame>>,
+    chat: ChatSelection,
     leaving: Option<Leave>,
     metrics: Metrics,
     smoke: Option<Smoke>,
@@ -127,6 +131,11 @@ enum SmokePhase {
 impl Editor {
     fn install(&mut self, ui: &EditorWindow, loaded: Loaded) {
         self.stop(ui);
+        self.invalidate_chat(ui, "プロジェクトが変わったため AI の結果は反映しません");
+        ui.set_ai_prompt("".into());
+        if !self.chat.is_running() {
+            ui.set_ai_status("".into());
+        }
         self.scrubbing = false;
         self.scrub_pending = None;
         ui.set_frame(slint::Image::default());
@@ -320,8 +329,14 @@ impl Editor {
         }
     }
 
-    fn show_clip(&self, ui: &EditorWindow) {
-        let range = self.loaded.as_ref().unwrap().range();
+    fn show_clip(&mut self, ui: &EditorWindow) {
+        let loaded = self.loaded.as_ref().unwrap();
+        let range = loaded.range();
+        let ai_source_available = loaded.project.clip.is_none();
+        ui.set_ai_source_available(ai_source_available);
+        if !ai_source_available {
+            self.invalidate_chat(ui, "素材区間が変わったため AI の結果は反映しません");
+        }
         ui.set_clip_start(seconds_text(range.source_start_us).into());
         ui.set_clip_end(seconds_text(range.source_end_us).into());
     }
@@ -693,6 +708,102 @@ impl Editor {
         }
         Ok(())
     }
+
+    fn submit_chat(&mut self, ui: &EditorWindow) -> Result<()> {
+        let loaded = self
+            .loaded
+            .as_ref()
+            .context("プロジェクトを開いてください")?;
+        ensure!(
+            loaded.project.clip.is_none(),
+            "区間を設定していないプロジェクトと全編に対応する字幕が必要です"
+        );
+        let prompt = ui.get_ai_prompt().trim().to_owned();
+        ensure!(!prompt.is_empty(), "編集の指示を入力してください");
+        ensure!(
+            !loaded.project.captions.is_empty(),
+            "時刻付き字幕を読み込んでください"
+        );
+        let api_key = std::env::var("OPENAI_API_KEY")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .context("OPENAI_API_KEY を設定してから meditor を起動してください")?;
+        let input = SelectionInput {
+            bounds: loaded.range(),
+            captions: loaded.project.captions.clone(),
+            clip_draft: clip_draft(ui),
+        };
+        self.chat.start(input, move |input| {
+            meditor_playback::ai::select_openai_clip(
+                &api_key,
+                &prompt,
+                &input.captions,
+                input.bounds,
+            )
+        })?;
+        ui.set_ai_busy(true);
+        ui.set_ai_cancellable(true);
+        ui.set_ai_status("処理中です".into());
+        Ok(())
+    }
+
+    fn invalidate_chat(&mut self, ui: &EditorWindow, message: &str) {
+        if self.chat.invalidate() {
+            ui.set_ai_cancellable(false);
+            ui.set_ai_status(message.into());
+        }
+    }
+
+    fn poll_chat(&mut self, ui: &EditorWindow) -> Result<()> {
+        if !self.chat.is_running() || self.leaving.is_some() {
+            return Ok(());
+        }
+        let result = self.chat.poll();
+        if !self.chat.is_running() {
+            ui.set_ai_busy(false);
+            ui.set_ai_cancellable(false);
+        }
+        let Some(result) = result? else { return Ok(()) };
+        let Some(loaded) = &self.loaded else {
+            return Ok(());
+        };
+        if loaded.project.clip.is_some()
+            || !result
+                .input
+                .matches(loaded.range(), &loaded.project.captions, &clip_draft(ui))
+        {
+            ui.set_ai_status("編集内容が変わったため AI の結果は反映しません".into());
+            return Ok(());
+        }
+        let Some(range) = result.range? else {
+            ui.set_ai_status("指示に合う区間が見つかりませんでした".into());
+            return Ok(());
+        };
+        ensure!(
+            range.valid_for(loaded.video.duration)
+                && range.source_start_us >= result.input.bounds.source_start_us
+                && range.source_end_us <= result.input.bounds.source_end_us,
+            "AI が対象区間外の時刻を返しました"
+        );
+        // Use the same checked apply path as a manually entered clip edit.
+        ui.set_clip_start(seconds_text(range.source_start_us).into());
+        ui.set_clip_end(seconds_text(range.source_end_us).into());
+        if let Err(error) = self.edit_clip(ui) {
+            let [start, end] = result.input.clip_draft;
+            ui.set_clip_start(start.into());
+            ui.set_clip_end(end.into());
+            return Err(error);
+        }
+        ui.set_ai_status(
+            format!(
+                "素材の {} – {} を区間に反映しました",
+                timestamp(range.source_start_us),
+                timestamp(range.source_end_us),
+            )
+            .into(),
+        );
+        Ok(())
+    }
 }
 
 fn timestamp(micros: i64) -> String {
@@ -707,6 +818,13 @@ fn timestamp(micros: i64) -> String {
 
 fn seconds_text(micros: i64) -> String {
     format!("{}.{:06}", micros / SECOND, micros % SECOND)
+}
+
+fn clip_draft(ui: &EditorWindow) -> [String; 2] {
+    [
+        ui.get_clip_start().to_string(),
+        ui.get_clip_end().to_string(),
+    ]
 }
 
 fn caption_row(caption: &meditor_playback::project::Caption) -> CaptionRow {
@@ -751,7 +869,14 @@ fn bind(ui: &EditorWindow, state: &Rc<RefCell<Editor>>) {
     callback!(on_new_project, |editor, ui| editor
         .request_leave(&ui, Leave::New));
     callback!(on_save_project, |editor, ui| editor.save(&ui));
-    callback!(on_import_captions, |editor, ui| editor.import(&ui));
+    callback!(on_import_captions, |editor, ui| {
+        let before = editor.captions.clone();
+        let result = editor.import(&ui);
+        if !Rc::ptr_eq(&before, &editor.captions) {
+            editor.invalidate_chat(&ui, "字幕が変わったため AI の結果は反映しません");
+        }
+        result
+    });
     callback!(on_choose_proxy, |editor, ui| editor.choose_proxy(&ui));
     callback!(on_update_clip, |editor, ui| editor.edit_clip(&ui));
     callback!(on_save_metrics, |editor, ui| editor.save_metrics(&ui));
@@ -819,6 +944,20 @@ fn bind(ui: &EditorWindow, state: &Rc<RefCell<Editor>>) {
     callback!(on_cancel_leave, |editor, ui| {
         ui.set_confirm_discard(false);
         editor.leaving = None;
+        Ok(())
+    });
+    callback!(on_ai_send, |editor, ui| {
+        if let Err(error) = editor.submit_chat(&ui) {
+            ui.set_ai_status(format!("{error:#}").into());
+        }
+        Ok(())
+    });
+    callback!(on_ai_caption_edit, |editor, ui| {
+        editor.invalidate_chat(&ui, "字幕が変わったため AI の結果は反映しません");
+        Ok(())
+    });
+    callback!(on_ai_cancel, |editor, ui| {
+        editor.invalidate_chat(&ui, "適用を中断しました。通信が終了すると再送信できます");
         Ok(())
     });
     let window = ui.as_weak();
@@ -918,6 +1057,9 @@ fn main() -> Result<()> {
                         }
                         ui.set_status(format!("{failure:#}").into());
                     }
+                }
+                if let Err(failure) = editor.poll_chat(&ui) {
+                    ui.set_ai_status(format!("{failure:#}").into());
                 }
             }
         });
