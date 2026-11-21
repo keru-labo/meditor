@@ -21,12 +21,12 @@ meditor は、Windows で実況素材を取り込み、AI にプロンプトで�
 | FFmpeg 設定・ノード編集 | [機能定義](ffmpeg-controls.md) | [シナリオ](ffmpeg-controls.feature) |
 | チャット履歴・作業履歴 | [機能定義](edit-history.md) | [シナリオ](edit-history.feature) |
 | 動画の書き出し | [機能定義](video-export.md) | [シナリオ](video-export.feature) |
-| AI サービスへの接続・送信許可 | [機能定義](ai-connections.md) | [シナリオ](ai-connections.feature) |
+| Codex App Server への接続・送信許可 | [機能定義](ai-connections.md) | [シナリオ](ai-connections.feature) |
 
 ## 仕様が未確定の項目
 
 - 字幕を別ファイルとして出力する場合の初回対応と形式。
-- ChatGPT・Gemini・Claude Code の公式な接続方式、利用条件、各方式で映像・音声を渡せる範囲。
+- Codex App Server で映像・音声を判断材料にできる範囲と送信許可の設定。
 - 配布する FFmpeg の構成と、その構成で提供するフィルター、形式、コーデック、設定項目のカタログ。
 
 BDD は初回リリースの受入仕様。実行用のステップ定義と現時点の検証状況は、実装に合わせて更新する。既存プレビューのテスト、Windows 実機での計測条件は別途記載している。 [プレビューの受入条件](../acceptance.md) · [性能計測](../performance.md)

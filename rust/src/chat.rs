@@ -1,6 +1,10 @@
 use anyhow::{Result, ensure};
 use meditor_playback::project::{Caption, ClipRange};
-use std::sync::mpsc::{self, Receiver};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+    mpsc::{self, Receiver},
+};
 
 pub struct SelectionInput {
     pub bounds: ClipRange,
@@ -26,7 +30,7 @@ pub struct SelectionResult {
 
 struct PendingSelection {
     result: Receiver<SelectionResult>,
-    accept: bool,
+    cancelled: Arc<AtomicBool>,
 }
 
 #[derive(Default)]
@@ -40,29 +44,28 @@ impl ChatSelection {
     pub fn invalidate(&mut self) -> bool {
         self.0
             .as_mut()
-            .is_some_and(|pending| std::mem::take(&mut pending.accept))
+            .is_some_and(|pending| !pending.cancelled.swap(true, Ordering::Relaxed))
     }
 
     pub fn start(
         &mut self,
         input: SelectionInput,
-        select: impl FnOnce(&SelectionInput) -> Result<Option<ClipRange>> + Send + 'static,
+        select: impl FnOnce(&SelectionInput, &AtomicBool) -> Result<Option<ClipRange>> + Send + 'static,
     ) -> Result<()> {
         ensure!(
             !self.is_running(),
             "前の AI 処理が終了するまでお待ちください"
         );
         let (send, result) = mpsc::sync_channel(1);
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let worker_cancelled = cancelled.clone();
         std::thread::Builder::new()
             .name("ai-clip-selection".into())
             .spawn(move || {
-                let range = select(&input);
+                let range = select(&input, &worker_cancelled);
                 let _ = send.send(SelectionResult { input, range });
             })?;
-        self.0 = Some(PendingSelection {
-            result,
-            accept: true,
-        });
+        self.0 = Some(PendingSelection { result, cancelled });
         Ok(())
     }
 
@@ -72,13 +75,13 @@ impl ChatSelection {
         };
         match pending.result.try_recv() {
             Ok(result) => {
-                let accept = pending.accept;
+                let accept = !pending.cancelled.load(Ordering::Relaxed);
                 self.0 = None;
                 Ok(accept.then_some(result))
             }
             Err(mpsc::TryRecvError::Empty) => Ok(None),
             Err(mpsc::TryRecvError::Disconnected) => {
-                let accept = pending.accept;
+                let accept = !pending.cancelled.load(Ordering::Relaxed);
                 self.0 = None;
                 ensure!(!accept, "AI 処理が予期せず終了しました");
                 Ok(None)
@@ -103,7 +106,7 @@ mod tests {
         let (send, result) = mpsc::sync_channel(1);
         let mut selection = ChatSelection(Some(PendingSelection {
             result,
-            accept: true,
+            cancelled: Arc::new(AtomicBool::new(false)),
         }));
         assert!(selection.invalidate());
         assert!(!selection.invalidate());

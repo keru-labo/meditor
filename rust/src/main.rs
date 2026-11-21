@@ -853,21 +853,17 @@ impl Editor {
             !loaded.project.captions.is_empty(),
             "時刻付き字幕を読み込んでください"
         );
-        let api_key = std::env::var("OPENAI_API_KEY")
-            .ok()
-            .filter(|value| !value.trim().is_empty())
-            .context("OPENAI_API_KEY を設定してから meditor を起動してください")?;
         let input = SelectionInput {
             bounds: loaded.range(),
             captions: loaded.project.captions.clone(),
             clip_draft: clip_draft(ui),
         };
-        self.chat.start(input, move |input| {
-            meditor_playback::ai::select_openai_clip(
-                &api_key,
+        self.chat.start(input, move |input, cancelled| {
+            meditor_playback::ai::select_codex_clip(
                 &prompt,
                 &input.captions,
                 input.bounds,
+                cancelled,
             )
         })?;
         ui.set_ai_busy(true);
@@ -1086,7 +1082,7 @@ fn bind(ui: &EditorWindow, state: &Rc<RefCell<Editor>>) {
         Ok(())
     });
     callback!(on_ai_cancel, |editor, ui| {
-        editor.invalidate_chat(&ui, "適用を中断しました。通信が終了すると再送信できます");
+        editor.invalidate_chat(&ui, "Codex の処理を中断しました");
         Ok(())
     });
     let window = ui.as_weak();
@@ -1096,6 +1092,11 @@ fn bind(ui: &EditorWindow, state: &Rc<RefCell<Editor>>) {
             let mut editor = state.borrow_mut();
             if editor.export_result.is_some() {
                 ui.set_status("書き出しの完了後に閉じてください".into());
+                return slint::CloseRequestResponse::KeepWindowShown;
+            }
+            if editor.chat.is_running() {
+                editor.invalidate_chat(&ui, "Codex の処理を中断しました");
+                ui.set_status("AI 処理の終了後に閉じてください".into());
                 return slint::CloseRequestResponse::KeepWindowShown;
             }
             if editor.loaded.as_ref().is_some_and(|loaded| loaded.dirty) {

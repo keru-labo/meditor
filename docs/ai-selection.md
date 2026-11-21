@@ -1,11 +1,25 @@
-# OpenAI の単一クリップ選択
+# Codex による単一クリップ選択
 
-Rust の `meditor_playback::ai::select_openai_clip` は、指示に沿った素材区間を一つ選ぶ。OpenAI Responses API の GPT-5.4 mini スナップショット `gpt-5.4-mini-2026-03-17` を指定し、Structured Outputs で整数マイクロ秒の開始・終了、または該当なしを受け取る。 [OpenAI のモデル仕様](https://developers.openai.com/api/docs/models/gpt-5.4-mini) · [Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs)
+meditor は Codex CLI の App Server を起動し、標準入出力の JSON-RPC で素材区間を一つ選ぶ。編集結果は整数マイクロ秒の開始・終了、または該当なしを表す JSON として受け取る。素材の範囲内にある有効な結果だけを適用する。 [接続方式の ADR](adr/0003-codex-app-server.md) · [Codex App Server の公式仕様](https://developers.openai.com/codex/app-server/) · [Codex CLI 0.171.0](https://github.com/openai/codex/releases/tag/rust-v0.171.0)
 
-呼び出し元は制作者が送信を選んだときに限り、API キー、プロンプト、現在の再生範囲とそのタイムライン上の字幕を渡す。処理は同期なので、GUI ではワーカーから呼び出す。キーは API の Authorization ヘッダーに使用する。送信する編集データは、プロンプト、範囲の時刻と、その範囲にある字幕の本文・話者ラベル・時刻。素材ファイルを読み込む処理はなく、リクエストに素材ファイルやそのパスを指定する項目はない。API には `store: false` を指定する。
+## Windows で試す
 
-SRT などから得た既存字幕を、素材を選ぶための発話の手掛かりとして使用する。現在の再生範囲の先頭を字幕の 0 秒とし、素材時刻に換算する。たとえば再生範囲が素材の 30–40 秒なら、字幕の 2–4 秒は素材の 32–34 秒となる。範囲に一部重なる字幕は時刻を範囲内に収め、範囲外の字幕と空の字幕は送信対象から除く。
+1. [Codex CLI 0.171.0](https://github.com/openai/codex/releases/tag/rust-v0.171.0) から Windows 用のネイティブ実行ファイルを取得する。展開した実行ファイルを `codex.exe` として絶対パスの PATH エントリが指すディレクトリに置く。
+2. PowerShell で meditor 専用の Codex フォルダーを指定し、Codex CLI で ChatGPT にログインする。以下をログイン専用の PowerShell セッションで実行する。
 
-結果は呼び出し元が受け取って適用する。該当なしは `Ok(None)` で表す。構造が不正な応答、未完了の応答、開始と終了が逆転した区間、範囲外の区間はエラーになる。通信には 60 秒のタイムアウトと応答サイズ上限がある。送信する JSON が 1 MiB を超える場合は、対象範囲を短くして再依頼する。
+   ```powershell
+   $env:CODEX_HOME = Join-Path $env:LOCALAPPDATA 'meditor\codex'
+   New-Item -ItemType Directory -Force $env:CODEX_HOME | Out-Null
+   codex.exe -c 'cli_auth_credentials_store="file"' login
+   ```
 
-このモジュールには GUI や編集履歴を持たせず、呼び出し元で中断や素材・字幕の変更を検出してから結果を適用する。テストでは合成字幕と模擬 API 応答を使う。 [AI 切り出しの機能定義](features/ai-clip-editing.md) · [外部サービスの製品仕様](features/ai-connections.md)
+3. 別の PowerShell セッション、または通常の方法で meditor を起動する。アプリは既定で上記の専用フォルダーを使う。場所を変更する場合はログイン時の `CODEX_HOME` と、meditor 起動時の `MEDITOR_CODEX_HOME` に同じ絶対パスを指定する。専用フォルダーには Codex が保存するログイン情報が入る。Codex の設定ファイルを置かず、共有やコミットの対象から外す。
+4. 素材区間が未設定で、元動画の先頭を基準とする字幕を読み込んだプロジェクトで、**AI 編集**から場面を指定する。**送信**すると編集指示と時刻付き字幕が Codex の ChatGPT 接続に送られる。選ばれた範囲を再生し、必要に応じて開始・終了を調整して保存する。 [編集の受入条件](features/ai-clip-editing.md)
+
+## 送信データと実行制限
+
+送信対象は編集指示、元素材の範囲を示す時刻、字幕の本文・話者名・開始終了時刻。たとえば再生範囲が素材の 30–40 秒なら、字幕の 2–4 秒は素材の 32–34 秒となる。部分的に重なる字幕の時刻は範囲内に収める。映像、音声、プロジェクトや素材のパスは送信しない。編集入力の上限は 1 MiB。
+
+ワーカーは毎回専用の一時作業フォルダーと一時スレッドを使用する。プロジェクトのフォルダーや通常の Codex 設定は渡さない。App Server の接続先とツール設定を点検し、環境アクセスを無効にした読み取り専用セッションを要求する。許可の問い合わせや未対応のツール操作を受け取った場合は処理を終了する。標準エラーや Codex の応答原文は UI に出さない。アプリはログイン情報を直接読み込まず、接続は Codex CLI が管理する。
+
+App Server の処理に 60 秒の上限を設ける。中断や編集対象の変更があればワーカーを終了して結果を破棄する。すでに共有したテキストは取り消せない。ワーカーが終了すると再送信できる。合成字幕と模擬 JSON-RPC で送信内容と異常応答をテストする。
