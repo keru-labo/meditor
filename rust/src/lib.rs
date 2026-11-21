@@ -3,6 +3,8 @@
 #![forbid(unsafe_code)]
 pub mod project;
 
+pub mod history;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SeekMode {
     Scrub { proxy_available: bool },
