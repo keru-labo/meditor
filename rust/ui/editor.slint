@@ -33,6 +33,12 @@ export component EditorWindow inherits Window {
     in-out property <string> clip-end;
     in-out property <bool> confirm-discard;
     property <bool> show-about;
+    property <bool> show-ai-chat;
+    in-out property <string> ai-prompt;
+    in property <string> ai-status;
+    in property <bool> ai-busy;
+    in property <bool> ai-cancellable;
+    in property <bool> ai-source-available;
 
     callback open-project();
     callback new-project();
@@ -52,6 +58,9 @@ export component EditorWindow inherits Window {
     callback confirm-leave();
     callback save-and-leave();
     callback cancel-leave();
+    callback ai-send();
+    callback ai-cancel();
+    callback ai-caption-edit();
 
     VerticalLayout {
         padding: 16px;
@@ -160,6 +169,49 @@ export component EditorWindow inherits Window {
                     LineEdit { text <=> root.clip-end; enabled: root.has-project; accessible-label: "素材の終了時刻"; }
                     Button { text: "区間を適用"; enabled: root.has-project; clicked => { root.update-clip(); } }
                 }
+                if root.show-ai-chat: VerticalLayout {
+                    vertical-stretch: 0;
+                    alignment: start;
+                    padding: 8px;
+                    spacing: 6px;
+                    Text {
+                        text: "AI 区間選択 • OpenAI";
+                        color: #e8edfa;
+                        font-weight: 650;
+                    }
+                    Text {
+                        text: "送信すると、指示と元動画に対応する時刻付き字幕が OpenAI に送られます。映像と音声は送信しません。";
+                        color: #a6afc3;
+                        wrap: word-wrap;
+                    }
+                    if !root.ai-source-available: Text {
+                        text: "区間を設定していないプロジェクトと全編に対応する字幕が必要です。";
+                        color: #a7c6ff;
+                        wrap: word-wrap;
+                    }
+                    TextEdit {
+                        text <=> root.ai-prompt;
+                        enabled: root.has-project && root.ai-source-available && !root.ai-busy;
+                        placeholder-text: "残したい場面を入力";
+                        accessible-label: "AI への編集の指示";
+                        height: 56px;
+                    }
+                    HorizontalLayout {
+                        alignment: start;
+                        spacing: 8px;
+                        Button {
+                            text: "送信";
+                            enabled: root.has-project && root.ai-source-available && !root.ai-busy && root.ai-prompt != "";
+                            clicked => { root.ai-send(); }
+                        }
+                        Button { text: "中断"; enabled: root.ai-cancellable; clicked => { root.ai-cancel(); } }
+                    }
+                    if root.ai-status != "": Text {
+                        text: root.ai-status;
+                        color: #a7c6ff;
+                        wrap: word-wrap;
+                    }
+                }
             }
             VerticalLayout {
                 horizontal-stretch: 2;
@@ -215,13 +267,18 @@ export component EditorWindow inherits Window {
                     }
                 }
                 Text { text: root.selection-label; color: #a6afc3; overflow: elide; }
-                LineEdit { text <=> root.speaker-text; enabled: root.selected >= 0; placeholder-text: "話者"; edited(_) => { root.update-caption(); } }
-                TextEdit { text <=> root.caption-text; enabled: root.selected >= 0; placeholder-text: "字幕本文"; height: 98px; edited(_) => { root.update-caption(); } }
+                LineEdit { text <=> root.speaker-text; enabled: root.selected >= 0; placeholder-text: "話者"; edited(_) => { root.ai-caption-edit(); root.update-caption(); } }
+                TextEdit { text <=> root.caption-text; enabled: root.selected >= 0; placeholder-text: "字幕本文"; height: 98px; edited(_) => { root.ai-caption-edit(); root.update-caption(); } }
             }
         }
         HorizontalLayout {
             spacing: 8px;
             Text { text: root.status; color: #a6afc3; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
+            Button {
+                text: root.show-ai-chat ? "AI 編集を閉じる" : "AI 編集";
+                enabled: root.has-project;
+                clicked => { root.show-ai-chat = !root.show-ai-chat; }
+            }
             Button { text: root.measuring ? "計測停止" : "計測開始"; enabled: root.has-project; clicked => { root.toggle-measurement(); } }
             Button { text: "計測保存"; enabled: root.has-project; clicked => { root.save-metrics(); } }
         }
