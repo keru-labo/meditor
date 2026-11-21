@@ -67,6 +67,7 @@ struct Loaded {
     audio: Option<AudioMixer>,
     dirty: bool,
     history: EditHistory,
+    discarded_history: bool,
 }
 
 impl Loaded {
@@ -74,7 +75,7 @@ impl Loaded {
         self.project.playback_range(self.video.duration)
     }
 
-    fn open(project: Project, path: PathBuf) -> Result<Self> {
+    fn open(mut project: Project, path: PathBuf) -> Result<Self> {
         let proxy = (!project.proxy.as_os_str().is_empty()).then(|| project.proxy.clone());
         let video = VideoWorker::open(project.video.clone(), proxy)?;
         if let Some(clip) = project.clip {
@@ -83,13 +84,16 @@ impl Loaded {
                 "素材区間が動画の長さを超えています"
             );
         }
+        let history = project.take_edit_history(video.duration);
+        let discarded_history = history.is_err();
         Ok(Self {
             project,
             path,
             video,
             audio: None,
             dirty: false,
-            history: EditHistory::default(),
+            history: history.unwrap_or_default(),
+            discarded_history,
         })
     }
 }
@@ -159,7 +163,11 @@ impl Editor {
         let has_proxy = !loaded.project.proxy.as_os_str().is_empty();
         ui.set_has_proxy(has_proxy);
         ui.set_use_proxy(has_proxy);
-        let status = format!("音声 {} トラック", loaded.project.audio.len());
+        let status = if loaded.discarded_history {
+            "保存された作業履歴を復元できませんでした".to_owned()
+        } else {
+            format!("音声 {} トラック", loaded.project.audio.len())
+        };
         self.loaded = Some(loaded);
         self.refresh_history_controls(ui);
         self.refresh_captions(ui);
@@ -225,7 +233,9 @@ impl Editor {
 
     fn save(&mut self, ui: &EditorWindow) -> Result<()> {
         if let Some(loaded) = &mut self.loaded {
-            loaded.project.save(&loaded.path)?;
+            loaded
+                .project
+                .save_with_history(&loaded.path, &loaded.history)?;
             loaded.dirty = false;
             ui.set_status("プロジェクトを保存しました".into());
         }

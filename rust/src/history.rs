@@ -1,9 +1,23 @@
-//! Reversible edits for the current project session.
+//! Reversible caption and clip edits.
 
 use crate::project::{ClipRange, Project};
 use anyhow::{Context, Result, ensure};
-use std::mem;
+use serde::{Deserialize, Serialize};
+use serde_json::value::{RawValue, to_raw_value};
+use std::{collections::HashMap, mem};
 
+const ARCHIVE_VERSION: u32 = 1;
+const MAX_SAVED_EDITS_PER_STACK: usize = 128;
+const MAX_SAVED_STACK_BYTES: usize = 512 * 1024;
+const MAX_ARCHIVE_BYTES: usize = 2 * MAX_SAVED_STACK_BYTES + 64;
+
+#[derive(Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    content = "value",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 pub enum Edit {
     Caption {
         row: usize,
@@ -61,6 +75,21 @@ pub struct EditHistory {
     redo: Vec<Edit>,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredHistory {
+    version: u32,
+    undo: Vec<Edit>,
+    redo: Vec<Edit>,
+}
+
+#[derive(Serialize)]
+struct HistoryArchive<'a> {
+    version: u32,
+    undo: &'a [Edit],
+    redo: &'a [Edit],
+}
+
 impl EditHistory {
     pub fn can_undo(&self) -> bool {
         !self.undo.is_empty()
@@ -68,6 +97,35 @@ impl EditHistory {
 
     pub fn can_redo(&self) -> bool {
         !self.redo.is_empty()
+    }
+
+    pub(crate) fn archive(&self) -> Result<Option<Box<RawValue>>> {
+        let undo = retained_edits(&self.undo)?;
+        let redo = retained_edits(&self.redo)?;
+        if undo.is_empty() && redo.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(to_raw_value(&HistoryArchive {
+            version: ARCHIVE_VERSION,
+            undo,
+            redo,
+        })?))
+    }
+
+    pub(crate) fn restore(archive: &RawValue, project: &Project, duration: i64) -> Result<Self> {
+        ensure!(
+            archive.get().len() <= MAX_ARCHIVE_BYTES,
+            "作業履歴が大きすぎます"
+        );
+        let history: StoredHistory =
+            serde_json::from_str(archive.get()).context("作業履歴を読み込めません")?;
+        ensure!(history.version == ARCHIVE_VERSION, "未対応の作業履歴です");
+        validate_sequence(&history.undo, project, duration)?;
+        validate_sequence(&history.redo, project, duration)?;
+        Ok(Self {
+            undo: history.undo,
+            redo: history.redo,
+        })
     }
 
     pub fn apply(
@@ -106,4 +164,69 @@ impl EditHistory {
         to.push(from.pop().expect("replaying a non-empty history"));
         Ok(target)
     }
+}
+
+fn retained_edits(edits: &[Edit]) -> Result<&[Edit]> {
+    let mut start = edits.len();
+    let mut remaining = MAX_SAVED_STACK_BYTES;
+    for edit in edits.iter().rev().take(MAX_SAVED_EDITS_PER_STACK) {
+        // Skip serialization if the raw text alone exceeds the byte budget.
+        if let Edit::Caption {
+            id, speaker, text, ..
+        } = edit
+            && id
+                .len()
+                .saturating_add(speaker.len())
+                .saturating_add(text.len())
+                >= remaining
+        {
+            break;
+        }
+        let encoded_size = serde_json::to_vec(edit)?.len() + 1; // Include a possible comma.
+        if encoded_size > remaining {
+            break;
+        }
+        remaining -= encoded_size;
+        start -= 1;
+    }
+    Ok(&edits[start..])
+}
+
+fn validate_sequence(edits: &[Edit], project: &Project, duration: i64) -> Result<()> {
+    ensure!(
+        edits.len() <= MAX_SAVED_EDITS_PER_STACK,
+        "作業履歴の件数が上限を超えました"
+    );
+    let mut clip = project.clip;
+    let mut captions = HashMap::new();
+    for edit in edits.iter().rev() {
+        match edit {
+            Edit::Caption {
+                row,
+                id,
+                speaker,
+                text,
+            } => {
+                let source = project
+                    .captions
+                    .get(*row)
+                    .filter(|caption| caption.id == *id)
+                    .context("作業履歴の対象字幕が見つかりません")?;
+                let current = captions
+                    .entry(*row)
+                    .or_insert((&source.speaker, &source.text));
+                let next = (speaker, text);
+                ensure!(*current != next, "作業履歴の変更前後が同じです");
+                *current = next;
+            }
+            Edit::Clip(range) => {
+                ensure!(
+                    clip != *range && range.is_none_or(|range| range.valid_for(duration)),
+                    "作業履歴の素材区間が無効です"
+                );
+                clip = *range;
+            }
+        }
+    }
+    Ok(())
 }
