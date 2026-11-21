@@ -62,8 +62,46 @@ fn existing_project_with_10_000_captions_roundtrips_one_edit_and_clip() -> anyho
     assert_eq!(saved.audio, original.audio);
     let json: serde_json::Value = serde_json::from_slice(&fs::read(path)?)?;
     assert_eq!(json["version"], 2);
+    assert!(json.get("captions_use_source_time").is_none());
     assert_eq!(json["video"], "元動画.mp4");
     assert_eq!(json["audio"][1]["path"], "話者.wav");
+    Ok(())
+}
+
+#[test]
+fn source_timed_captions_keep_original_times_and_apply_the_clip_offset() -> anyhow::Result<()> {
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("project.json");
+    let mut project = Project::new(PathBuf::from("video.mp4"), Vec::new())?;
+    let clip = ClipRange {
+        source_start_us: 3_000_000,
+        source_end_us: 8_000_000,
+    };
+    project.captions = vec![Caption {
+        id: "1".into(),
+        start_us: 4_000_000,
+        end_us: 5_000_000,
+        speaker: String::new(),
+        text: "素材時刻の字幕".into(),
+    }];
+    project.save(&path)?;
+    let uncut = Project::load(&path)?;
+    assert!(!uncut.captions_use_source_time);
+    let full_range = uncut.playback_range(10_000_000);
+
+    project.set_clip(clip, 10_000_000)?;
+    project.save(&path)?;
+    let mut reopened = Project::load(&path)?;
+    assert!(!reopened.captions_use_source_time);
+    assert_eq!(reopened.caption_time_offset(clip), 0);
+
+    reopened.captions_use_source_time = true;
+    reopened.save(&path)?;
+    let saved = Project::load(&path)?;
+    assert!(saved.captions_use_source_time);
+    assert_eq!(saved.caption_time_offset(clip), 3_000_000);
+    assert_eq!(saved.caption_time_offset(full_range), 0);
+    assert_eq!(saved.captions, project.captions);
     Ok(())
 }
 

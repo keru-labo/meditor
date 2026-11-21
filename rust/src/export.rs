@@ -118,11 +118,18 @@ impl ExportSnapshot {
         settings: ExportSettings,
     ) -> Self {
         let range = project.playback_range(duration);
+        let caption_start = project.caption_time_offset(range);
+        let caption_end = caption_start + range.duration();
         let captions = project
             .captions
             .iter()
-            .filter(|caption| caption.start_us < range.duration())
+            .filter(|caption| caption.start_us < caption_end && caption.end_us > caption_start)
             .cloned()
+            .map(|mut caption| {
+                caption.start_us = caption.start_us.max(caption_start) - caption_start;
+                caption.end_us = caption.end_us.min(caption_end) - caption_start;
+                caption
+            })
             .collect();
         Self {
             video: project.video.clone(),
@@ -358,6 +365,49 @@ mod tests {
         assert!(script.contains("0:00:00.10,0:00:02.00"));
         assert!(script.contains("話者A: first\\N\\{\\\u{2060}pos(1,1)\\}"));
         assert_eq!(script.matches("Dialogue:").count(), 1);
+    }
+
+    #[test]
+    fn source_captions_are_trimmed_and_shifted_to_the_clip_timeline() -> Result<()> {
+        let mut project = Project::new("fixture.mp4".into(), vec![])?;
+        project.set_clip(
+            ClipRange {
+                source_start_us: 1_000_000,
+                source_end_us: 3_000_000,
+            },
+            4_000_000,
+        )?;
+        project.captions_use_source_time = true;
+        for (text, start_us, end_us) in [
+            ("before", 500_000, 1_000_000),
+            ("left", 800_000, 1_200_000),
+            ("inside", 1_200_000, 2_000_000),
+            ("right", 2_800_000, 3_200_000),
+            ("after", 3_000_000, 3_400_000),
+        ] {
+            project.captions.push(Caption {
+                id: text.into(),
+                start_us,
+                end_us,
+                speaker: String::new(),
+                text: text.into(),
+            });
+        }
+        let snapshot =
+            ExportSnapshot::capture(&project, 4_000_000, 0, 0, ExportSettings::default());
+        assert_eq!(
+            snapshot
+                .captions
+                .iter()
+                .map(|cue| (cue.text.as_str(), cue.start_us, cue.end_us))
+                .collect::<Vec<_>>(),
+            [
+                ("left", 0, 200_000),
+                ("inside", 200_000, 1_000_000),
+                ("right", 1_800_000, 2_000_000),
+            ],
+        );
+        Ok(())
     }
 
     #[test]

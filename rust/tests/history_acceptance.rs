@@ -199,6 +199,101 @@ fn saved_undo_and_redo_survive_reopening_v1_and_v2() -> Result<()> {
 }
 
 #[test]
+fn clip_and_caption_basis_undo_and_redo_together_after_reopening() -> Result<()> {
+    let folder = tempfile::tempdir()?;
+    let path = folder.path().join("project.json");
+    let mut project = project()?;
+    let mut history = EditHistory::default();
+    // An AI selection changes both values, then a manual trim leaves the basis alone.
+    assert!(matches!(
+        history.apply(
+            &mut project,
+            DURATION,
+            Edit::ClipWithCaptionBasis {
+                range: Some(TRIM),
+                captions_use_source_time: true,
+            },
+        )?,
+        Some(EditTarget::Clip)
+    ));
+    let manual = ClipRange {
+        source_start_us: TRIM.source_start_us + SECOND,
+        ..TRIM
+    };
+    history.apply(&mut project, DURATION, Edit::Clip(Some(manual)))?;
+    project.save_with_history(&path, &history)?;
+
+    let mut reopened = Project::load(&path)?;
+    let mut history = reopened.take_edit_history(DURATION)?;
+    assert_eq!(reopened.clip, Some(manual));
+    assert!(reopened.captions_use_source_time);
+    assert!(history.undo(&mut reopened, DURATION)?.is_some());
+    assert_eq!(reopened.clip, Some(TRIM));
+    assert!(reopened.captions_use_source_time);
+    assert!(history.undo(&mut reopened, DURATION)?.is_some());
+    assert_eq!(reopened.clip, None);
+    assert!(!reopened.captions_use_source_time);
+    reopened.save_with_history(&path, &history)?;
+
+    let mut reopened = Project::load(&path)?;
+    let mut history = reopened.take_edit_history(DURATION)?;
+    assert!(history.redo(&mut reopened, DURATION)?.is_some());
+    assert_eq!(reopened.clip, Some(TRIM));
+    assert!(reopened.captions_use_source_time);
+    assert!(history.redo(&mut reopened, DURATION)?.is_some());
+    assert_eq!(reopened.clip, Some(manual));
+    assert!(reopened.captions_use_source_time);
+    assert!(!history.can_redo());
+    Ok(())
+}
+
+#[test]
+fn caption_basis_only_edit_is_replayable_and_invalid_clip_leaves_it_unchanged() -> Result<()> {
+    let folder = tempfile::tempdir()?;
+    let path = folder.path().join("project.json");
+    let mut project = project()?;
+    let mut history = EditHistory::default();
+    assert!(
+        history
+            .apply(
+                &mut project,
+                DURATION,
+                Edit::ClipWithCaptionBasis {
+                    range: None,
+                    captions_use_source_time: true,
+                },
+            )?
+            .is_some()
+    );
+    project.save_with_history(&path, &history)?;
+    let mut reopened = Project::load(&path)?;
+    let mut history = reopened.take_edit_history(DURATION)?;
+    assert!(history.undo(&mut reopened, DURATION)?.is_some());
+    assert!(!reopened.captions_use_source_time);
+
+    let invalid = ClipRange {
+        source_end_us: DURATION + 1,
+        ..TRIM
+    };
+    assert!(
+        history
+            .apply(
+                &mut reopened,
+                DURATION,
+                Edit::ClipWithCaptionBasis {
+                    range: Some(invalid),
+                    captions_use_source_time: true,
+                },
+            )
+            .is_err()
+    );
+    assert_eq!(reopened.clip, None);
+    assert!(!reopened.captions_use_source_time);
+    assert!(history.can_redo());
+    Ok(())
+}
+
+#[test]
 fn absent_or_invalid_archive_does_not_change_the_loaded_project() -> Result<()> {
     let folder = tempfile::tempdir()?;
     let path = folder.path().join("project.json");
@@ -228,6 +323,16 @@ fn absent_or_invalid_archive_does_not_change_the_loaded_project() -> Result<()> 
         json!({"version": 1, "undo": [], "redo": [{"kind": "clip", "value": {
             "source_start_us": 0, "source_end_us": DURATION + 1
         }}]}),
+        json!({"version": 1, "undo": [], "redo": [{"kind": "clip_with_caption_basis", "value": {
+            "range": TRIM, "captions_use_source_time": false
+        }}]}),
+        json!({"version": 1, "undo": [], "redo": [{"kind": "clip_with_caption_basis", "value": {
+            "captions_use_source_time": true
+        }}]}),
+        json!({"version": 1, "undo": [], "redo": [{"kind": "clip_with_caption_basis", "value": {
+            "range": {"source_start_us": 0, "source_end_us": DURATION + 1},
+            "captions_use_source_time": true
+        }}]}),
     ] {
         let mut doc = doc.clone();
         doc["edit_history"] = archive;
@@ -236,6 +341,7 @@ fn absent_or_invalid_archive_does_not_change_the_loaded_project() -> Result<()> 
         assert!(reopened.take_edit_history(DURATION).is_err());
         assert_eq!(reopened.captions[0].text, "開始");
         assert_eq!(reopened.clip, Some(TRIM));
+        assert!(!reopened.captions_use_source_time);
     }
     Ok(())
 }

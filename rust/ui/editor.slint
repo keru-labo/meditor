@@ -47,6 +47,7 @@ export component EditorWindow inherits Window {
     in property <bool> ai-cancellable;
     in property <bool> ai-source-available;
     in property <bool> ai-export-ready;
+    in property <bool> captions-use-source-time;
     in property <ExportSelection> ai-export-selection;
     property <int> ai-export-quality;
     property <int> ai-export-canvas;
@@ -272,7 +273,10 @@ export component EditorWindow inherits Window {
                 horizontal-stretch: 2;
                 min-width: 315px;
                 spacing: 8px;
-                Text { text: "字幕   " + root.captions.length; color: #e8edfa; font-size: 17px; font-weight: 650; }
+                Text {
+                    text: (root.captions-use-source-time ? "字幕（素材時刻）   " : "字幕   ") + root.captions.length;
+                    color: #e8edfa; font-size: 17px; font-weight: 650;
+                }
                 Rectangle {
                     vertical-stretch: 1;
                     forward-focus: caption-keys;
