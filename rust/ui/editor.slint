@@ -170,6 +170,8 @@ export component EditorWindow inherits Window {
                     Button { text: "区間を適用"; enabled: root.has-project; clicked => { root.update-clip(); } }
                 }
                 if root.show-ai-chat: VerticalLayout {
+                    vertical-stretch: 0;
+                    alignment: start;
                     padding: 8px;
                     spacing: 6px;
                     Text {
@@ -195,6 +197,7 @@ export component EditorWindow inherits Window {
                         height: 56px;
                     }
                     HorizontalLayout {
+                        alignment: start;
                         spacing: 8px;
                         Button {
                             text: "送信";
