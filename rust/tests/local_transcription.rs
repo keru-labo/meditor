@@ -1,6 +1,16 @@
 use anyhow::{Result, ensure};
-use meditor_playback::project::import_srt;
-use std::{env, fs, path::Path, process::Command};
+use meditor_playback::{
+    project::import_srt,
+    transcription::{TranscriptionCancellation, transcribe_with_cancellation},
+};
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+    process::Command,
+    sync::mpsc,
+    thread,
+    time::{Duration, Instant},
+};
 
 fn write_wave(audio: &Path, sample_rate: u32) -> Result<()> {
     let spec = hound::WavSpec {
@@ -17,10 +27,7 @@ fn write_wave(audio: &Path, sample_rate: u32) -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn local_srt_roundtrip_and_failures() -> Result<()> {
-    let directory = tempfile::tempdir()?;
-    let root = directory.path();
+fn compile_mock_whisper(root: &Path) -> Result<PathBuf> {
     let engine = root.join(format!("mock whisper{}", env::consts::EXE_SUFFIX));
     let source = root.join("whisper_fixture.rs");
     fs::write(&source, include_str!("fixtures/mock_whisper.rs"))?;
@@ -36,6 +43,14 @@ fn local_srt_roundtrip_and_failures() -> Result<()> {
         String::from_utf8_lossy(&compile.stderr)
     );
 
+    Ok(engine)
+}
+
+#[test]
+fn local_srt_roundtrip_and_failures() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let root = directory.path();
+    let engine = compile_mock_whisper(root)?;
     let audio = root.join("voice sample.wav");
     write_wave(&audio, 16_000)?;
     let original_audio = fs::read(&audio)?;
@@ -96,5 +111,45 @@ fn local_srt_roundtrip_and_failures() -> Result<()> {
     assert!(!unsupported.status.success());
     assert!(String::from_utf8_lossy(&unsupported.stderr).contains("モノラル 16 kHz"));
     assert!(!root.join("wrong-rate.srt").exists());
+    Ok(())
+}
+
+#[test]
+fn cancelling_whisper_discards_staged_output() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let root = directory.path();
+    let engine = compile_mock_whisper(root)?;
+    let audio = root.join("voice sample.wav");
+    write_wave(&audio, 16_000)?;
+    let model = root.join("blocking engine.bin");
+    fs::write(&model, b"mock model")?;
+    let output = root.join("cancelled.srt");
+    let started = root.join("whisper-started");
+    let cancellation = TranscriptionCancellation::default();
+    let worker_cancellation = cancellation.clone();
+    let worker_output = output.clone();
+    let (finished, result) = mpsc::channel();
+    let worker = thread::spawn(move || {
+        let result = transcribe_with_cancellation(
+            &engine,
+            &model,
+            &audio,
+            &worker_output,
+            &worker_cancellation,
+        );
+        let _ = finished.send(result);
+    });
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !started.is_file() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+    let cancelled = cancellation.cancel();
+    let result = result.recv_timeout(Duration::from_secs(5))?;
+    worker.join().expect("transcription worker panicked");
+    assert!(started.is_file(), "whisper fixture did not start");
+    assert!(cancelled);
+    assert!(result.unwrap_err().to_string().contains("中止"));
+    assert!(!output.exists());
+    assert!(fs::read_dir(root)?.all(|entry| !entry.unwrap().path().is_dir()));
     Ok(())
 }

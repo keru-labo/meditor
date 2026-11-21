@@ -5,6 +5,7 @@ pub mod ai;
 pub mod project;
 
 pub mod history;
+pub mod transcription;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SeekMode {
