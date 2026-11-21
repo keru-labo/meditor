@@ -1,5 +1,7 @@
+use crate::history::EditHistory;
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
+use serde_json::value::RawValue;
 use std::{
     collections::HashSet,
     fs::{self, File},
@@ -63,6 +65,8 @@ pub struct Project {
     pub captions: Vec<Caption>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clip: Option<ClipRange>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    edit_history: Option<Box<RawValue>>,
 }
 
 impl Project {
@@ -74,6 +78,7 @@ impl Project {
             audio,
             captions: Vec::new(),
             clip: None,
+            edit_history: None,
         };
         project.validate()?;
         Ok(project)
@@ -130,6 +135,21 @@ impl Project {
 
     pub fn set_clip(&mut self, range: ClipRange, duration: i64) -> Result<()> {
         self.set_clip_override(Some(range), duration)
+    }
+
+    pub fn take_edit_history(&mut self, duration: i64) -> Result<EditHistory> {
+        match self.edit_history.take() {
+            Some(archive) => EditHistory::restore(&archive, self, duration),
+            None => Ok(EditHistory::default()),
+        }
+    }
+
+    pub fn save_with_history(&mut self, path: &Path, history: &EditHistory) -> Result<()> {
+        let archive = history.archive()?;
+        let previous = std::mem::replace(&mut self.edit_history, archive);
+        let result = self.save(path);
+        self.edit_history = previous;
+        result
     }
 
     pub(crate) fn set_clip_override(

@@ -3,6 +3,8 @@ use meditor_playback::{
     history::{Edit, EditHistory, EditTarget},
     project::{Caption, ClipRange, Project, SECOND},
 };
+use serde_json::{Value, json};
+use std::fs;
 
 const DURATION: i64 = 60 * SECOND;
 const TRIM: ClipRange = ClipRange {
@@ -147,5 +149,124 @@ fn undo_refuses_to_modify_a_different_caption_in_the_same_row() -> Result<()> {
     assert!(history.can_undo());
     assert!(!history.can_redo());
     assert_eq!(project.captions[0].text, "別の字幕");
+    Ok(())
+}
+
+#[test]
+fn saved_undo_and_redo_survive_reopening_v1_and_v2() -> Result<()> {
+    let folder = tempfile::tempdir()?;
+    let path = folder.path().join("project.json");
+    let mut project = project()?;
+    let mut history = EditHistory::default();
+    history.apply(&mut project, DURATION, caption("ボス戦"))?;
+    history.apply(&mut project, DURATION, Edit::Clip(Some(TRIM)))?;
+    history.undo(&mut project, DURATION)?;
+
+    project.save_with_history(&path, &history)?;
+    let saved: Value = serde_json::from_slice(&fs::read(&path)?)?;
+    assert_eq!(saved["version"], 1);
+    assert_eq!(saved["video"], "recording.mp4");
+
+    let mut reopened = Project::load(&path)?;
+    let mut history = reopened.take_edit_history(DURATION)?;
+    assert_eq!(reopened.clip, None);
+    assert_eq!(reopened.captions[0].text, "ボス戦");
+    assert!(history.can_undo() && history.can_redo());
+    assert!(matches!(
+        history.redo(&mut reopened, DURATION)?,
+        Some(EditTarget::Clip)
+    ));
+    assert_eq!(reopened.clip, Some(TRIM));
+    reopened.save_with_history(&path, &history)?;
+
+    let saved: Value = serde_json::from_slice(&fs::read(&path)?)?;
+    assert_eq!(saved["version"], 2);
+    let mut reopened = Project::load(&path)?;
+    let mut history = reopened.take_edit_history(DURATION)?;
+    assert!(matches!(
+        history.undo(&mut reopened, DURATION)?,
+        Some(EditTarget::Clip)
+    ));
+    assert!(matches!(
+        history.undo(&mut reopened, DURATION)?,
+        Some(EditTarget::Caption(0))
+    ));
+    assert_eq!(reopened.clip, None);
+    assert_eq!(reopened.captions[0].text, "開始");
+    assert_eq!(reopened.captions[0].speaker, "A");
+    assert!(!history.can_undo());
+    Ok(())
+}
+
+#[test]
+fn absent_or_invalid_archive_does_not_change_the_loaded_project() -> Result<()> {
+    let folder = tempfile::tempdir()?;
+    let path = folder.path().join("project.json");
+    let mut project = project()?;
+    project.save(&path)?;
+    let mut legacy = Project::load(&path)?;
+    let empty = legacy.take_edit_history(DURATION)?;
+    assert!(!empty.can_undo() && !empty.can_redo());
+    legacy.set_clip(TRIM, DURATION)?;
+    legacy.save(&path)?;
+    let empty = Project::load(&path)?.take_edit_history(DURATION)?;
+    assert!(!empty.can_undo() && !empty.can_redo());
+
+    let doc: Value = serde_json::from_slice(&fs::read(&path)?)?;
+    let same = json!({"kind": "caption", "value": {
+        "row": 0, "id": "opening", "speaker": "A", "text": "開始"
+    }});
+    for archive in [
+        json!("x".repeat(2 * 1024 * 1024)),
+        json!({"version": 99, "undo": [], "redo": []}),
+        json!({"version": 1, "undo": [{"kind": "unsupported"}], "redo": []}),
+        json!({"version": 1, "undo": [same.clone()], "redo": []}),
+        json!({"version": 1, "undo": [], "redo": vec![same.clone(); 129]}),
+        json!({"version": 1, "undo": [{"kind": "caption", "value": {
+            "row": 0, "id": "other", "speaker": "B", "text": "別の字幕"
+        }}], "redo": []}),
+        json!({"version": 1, "undo": [], "redo": [{"kind": "clip", "value": {
+            "source_start_us": 0, "source_end_us": DURATION + 1
+        }}]}),
+    ] {
+        let mut doc = doc.clone();
+        doc["edit_history"] = archive;
+        fs::write(&path, serde_json::to_vec(&doc)?)?;
+        let mut reopened = Project::load(&path)?;
+        assert!(reopened.take_edit_history(DURATION).is_err());
+        assert_eq!(reopened.captions[0].text, "開始");
+        assert_eq!(reopened.clip, Some(TRIM));
+    }
+    Ok(())
+}
+
+#[test]
+fn saves_only_the_contiguous_recent_suffix() -> Result<()> {
+    let folder = tempfile::tempdir()?;
+    let path = folder.path().join("project.json");
+    let mut project = project()?;
+    let mut history = EditHistory::default();
+    for n in 1..=130 {
+        history.apply(&mut project, DURATION, caption(&n.to_string()))?;
+    }
+    project.save_with_history(&path, &history)?;
+    let mut reopened = Project::load(&path)?;
+    let mut restored = reopened.take_edit_history(DURATION)?;
+    for _ in 0..128 {
+        assert!(restored.undo(&mut reopened, DURATION)?.is_some());
+    }
+    assert!(!restored.can_undo());
+    assert_eq!(reopened.captions[0].text, "2");
+
+    let long_caption = "x".repeat(512 * 1024);
+    history.apply(&mut project, DURATION, caption(&long_caption))?;
+    history.apply(&mut project, DURATION, caption("短い字幕"))?;
+    history.apply(&mut project, DURATION, caption("最終変更"))?;
+    project.save_with_history(&path, &history)?;
+    let mut reopened = Project::load(&path)?;
+    let mut restored = reopened.take_edit_history(DURATION)?;
+    restored.undo(&mut reopened, DURATION)?;
+    assert_eq!(reopened.captions[0].text, "短い字幕");
+    assert!(!restored.can_undo());
     Ok(())
 }
