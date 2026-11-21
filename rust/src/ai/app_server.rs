@@ -18,6 +18,8 @@ use serde_json::{Value, json};
 
 const CODEX_VERSION: &str = "0.171.0";
 const CHATGPT_BASE_URL: &str = "https://chatgpt.com/backend-api/";
+const SELECTION_MODEL: &str = "gpt-5.5";
+const MODEL_CATALOG_FILE: &str = "model-catalog.json";
 const DEADLINE: Duration = Duration::from_secs(60);
 const CANCEL_POLL: Duration = Duration::from_millis(50);
 // The server can echo the input as a userMessage item, with JSON escaping.
@@ -27,6 +29,10 @@ const DISABLED_FEATURES: &[&str] = &[
     "apps",
     "auth_elicitation",
     "browser_use",
+    "code_mode",
+    "code_mode_host",
+    "code_mode_host_grpc",
+    "code_mode_only",
     "hooks",
     "in_app_browser",
     "image_generation",
@@ -59,6 +65,35 @@ pub(super) fn select(
         .prefix("selection-")
         .tempdir_in(&home)
         .context("Codex の作業フォルダーを作成できませんでした")?;
+    let catalog = cwd.path().join(MODEL_CATALOG_FILE);
+    // Model metadata takes precedence over feature flags in Codex 0.171.0.
+    // A static catalog prevents cached or refreshed model metadata from enabling Code Mode.
+    std::fs::write(
+        &catalog,
+        serde_json::to_vec(&json!({"models": [{
+            "slug": SELECTION_MODEL,
+            "display_name": "GPT-5.5",
+            "default_reasoning_level": "medium",
+            "supported_reasoning_levels": [{"effort": "medium", "description": "Medium"}],
+            "shell_type": "disabled",
+            "visibility": "list",
+            "supported_in_api": true,
+            "priority": 0,
+            "tool_mode": "direct",
+            "base_instructions": "Select a clip using the supplied timestamps.",
+            "include_apps_usage_instructions": false,
+            "support_verbosity": true,
+            "default_verbosity": "low",
+            "truncation_policy": {"mode": "tokens", "limit": 10000},
+            "context_window": 272000,
+            "experimental_supported_tools": [],
+            "input_modalities": ["text"],
+            "node_repl_disabled": true
+        }]}))?,
+    )
+    .map_err(|_| anyhow::anyhow!("Codex のモデル設定を作成できませんでした"))?;
+    let catalog_override = serde_json::to_string(&catalog)
+        .map_err(|_| anyhow::anyhow!("Codex のモデル設定の場所を確認できませんでした"))?;
     let executable = env::var_os("PATH")
         .into_iter()
         .flat_map(|path| env::split_paths(&path).collect::<Vec<_>>())
@@ -123,6 +158,8 @@ pub(super) fn select(
         "-c",
         "model_provider=\"openai\"",
         "-c",
+        &format!("model_catalog_json={catalog_override}"),
+        "-c",
         &format!("chatgpt_base_url=\"{CHATGPT_BASE_URL}\""),
         "-c",
         "openai_base_url=\"\"",
@@ -167,8 +204,8 @@ fn codex_home() -> Result<PathBuf> {
     Ok(home)
 }
 
-fn same_directory(reported: &Path, expected: &Path) -> bool {
-    // Windows can report the same directory using a different path prefix.
+fn same_path(reported: &Path, expected: &Path) -> bool {
+    // Windows can report the same location using a different path prefix.
     reported == expected
         || (reported.is_absolute()
             && reported
@@ -352,12 +389,16 @@ impl Rpc<'_> {
         self.send(json!({"method": "initialized"}))?;
         let config = self.request(2, "config/read", json!({"includeLayers": false}))?;
         let config = &config["config"];
+        let catalog = cwd.join(MODEL_CATALOG_FILE);
         ensure!(
             config["mcp_servers"]
                 .as_object()
                 .is_some_and(|servers| servers.is_empty())
                 && config["web_search"] == "disabled"
                 && config["model_provider"] == "openai"
+                && config["model_catalog_json"]
+                    .as_str()
+                    .is_some_and(|reported| same_path(Path::new(reported), &catalog))
                 && config["model_providers"]
                     .as_object()
                     .is_some_and(|providers| providers.is_empty())
@@ -399,6 +440,7 @@ impl Rpc<'_> {
                 "ephemeral": true,
                 "environments": [],
                 "dynamicTools": [],
+                "model": SELECTION_MODEL,
                 "modelProvider": "openai",
                 "baseInstructions": instructions,
                 "developerInstructions": "Return only the requested selection."
@@ -416,9 +458,10 @@ impl Rpc<'_> {
                     .as_array()
                     .is_some_and(|roots| roots.is_empty())
                 && thread["modelProvider"] == "openai"
+                && thread["model"] == SELECTION_MODEL
                 && thread["cwd"]
                     .as_str()
-                    .is_some_and(|reported| same_directory(Path::new(reported), cwd))
+                    .is_some_and(|reported| same_path(Path::new(reported), cwd))
                 && thread["instructionSources"]
                     .as_array()
                     .is_some_and(|sources| sources.is_empty()),
@@ -512,6 +555,7 @@ mod tests {
                 "mcp_servers": {},
                 "web_search": "disabled",
                 "model_provider": "openai",
+                "model_catalog_json": cwd.join(MODEL_CATALOG_FILE),
                 "model_providers": {},
                 "chatgpt_base_url": CHATGPT_BASE_URL,
                 "openai_base_url": "",
@@ -530,6 +574,7 @@ mod tests {
                 "cwd": cwd, "approvalPolicy": "never",
                 "sandbox": {"type":"readOnly","networkAccess":false},
                 "instructionSources": [], "modelProvider": "openai",
+                "model": SELECTION_MODEL,
                 "runtimeWorkspaceRoots": [],
                 "thread":{"id":"thread-1","ephemeral":true,"environments":[]}
             }}),
@@ -598,6 +643,7 @@ mod tests {
                 .all(|message| !message.to_string().contains("synthetic request data"))
         );
         assert_eq!(sent[4]["params"]["ephemeral"], true);
+        assert_eq!(sent[4]["params"]["model"], SELECTION_MODEL);
         assert_eq!(sent[4]["params"]["environments"], json!([]));
         assert_eq!(sent[5]["params"]["environments"], json!([]));
         assert_eq!(
@@ -620,12 +666,28 @@ mod tests {
                 json!({"synthetic-private":"configured"}),
             ),
             (1, "/result/config/features/shell_tool", json!(true)),
+            (1, "/result/config/features/code_mode", json!(true)),
+            (1, "/result/config/features/code_mode_host", json!(true)),
+            (
+                1,
+                "/result/config/features/code_mode_host_grpc",
+                json!(true),
+            ),
+            (1, "/result/config/features/code_mode_only", json!(true)),
+            (1, "/result/config/model_catalog_json", Value::Null),
+            (
+                1,
+                "/result/config/model_catalog_json",
+                json!(cwd.path().join("other-model-catalog.json")),
+            ),
             (
                 1,
                 "/result/config/chatgpt_base_url",
                 json!("synthetic-private"),
             ),
             (2, "/result/account/type", json!("apiKey")),
+            (3, "/result/model", json!("gpt-6.2-sol")),
+            (3, "/result/model", Value::Null),
             (3, "/result/sandbox/networkAccess", json!(true)),
             (
                 3,
