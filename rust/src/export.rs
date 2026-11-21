@@ -1,6 +1,10 @@
+use crate::ExportSelection;
 use crate::audio::write_export_mix;
 use anyhow::{Context, Result, ensure};
-use meditor_playback::project::{Caption, ClipRange, Project, SECOND, Track};
+use meditor_playback::{
+    ai::{ExportCanvas, ExportPreferences, ExportQuality},
+    project::{Caption, ClipRange, Project, SECOND, Track},
+};
 use std::{
     fs::{self, File},
     path::PathBuf,
@@ -35,6 +39,23 @@ enum Canvas {
     Source,
     Landscape,
     Portrait,
+}
+
+impl From<ExportPreferences> for ExportSelection {
+    fn from(preferences: ExportPreferences) -> Self {
+        Self {
+            quality: match preferences.quality {
+                None | Some(ExportQuality::Standard) => 0,
+                Some(ExportQuality::High) => 1,
+                Some(ExportQuality::Compact) => 2,
+            },
+            canvas: match preferences.canvas {
+                None | Some(ExportCanvas::Source) => 0,
+                Some(ExportCanvas::Landscape) => 1,
+                Some(ExportCanvas::Portrait) => 2,
+            },
+        }
+    }
 }
 
 impl ExportSettings {
@@ -97,11 +118,18 @@ impl ExportSnapshot {
         settings: ExportSettings,
     ) -> Self {
         let range = project.playback_range(duration);
+        let caption_start = project.caption_time_offset(range);
+        let caption_end = caption_start + range.duration();
         let captions = project
             .captions
             .iter()
-            .filter(|caption| caption.start_us < range.duration())
+            .filter(|caption| caption.start_us < caption_end && caption.end_us > caption_start)
             .cloned()
+            .map(|mut caption| {
+                caption.start_us = caption.start_us.max(caption_start) - caption_start;
+                caption.end_us = caption.end_us.min(caption_end) - caption_start;
+                caption
+            })
             .collect();
         Self {
             video: project.video.clone(),
@@ -340,6 +368,49 @@ mod tests {
     }
 
     #[test]
+    fn source_captions_are_trimmed_and_shifted_to_the_clip_timeline() -> Result<()> {
+        let mut project = Project::new("fixture.mp4".into(), vec![])?;
+        project.set_clip(
+            ClipRange {
+                source_start_us: 1_000_000,
+                source_end_us: 3_000_000,
+            },
+            4_000_000,
+        )?;
+        project.captions_use_source_time = true;
+        for (text, start_us, end_us) in [
+            ("before", 500_000, 1_000_000),
+            ("left", 800_000, 1_200_000),
+            ("inside", 1_200_000, 2_000_000),
+            ("right", 2_800_000, 3_200_000),
+            ("after", 3_000_000, 3_400_000),
+        ] {
+            project.captions.push(Caption {
+                id: text.into(),
+                start_us,
+                end_us,
+                speaker: String::new(),
+                text: text.into(),
+            });
+        }
+        let snapshot =
+            ExportSnapshot::capture(&project, 4_000_000, 0, 0, ExportSettings::default());
+        assert_eq!(
+            snapshot
+                .captions
+                .iter()
+                .map(|cue| (cue.text.as_str(), cue.start_us, cue.end_us))
+                .collect::<Vec<_>>(),
+            [
+                ("left", 0, 200_000),
+                ("inside", 200_000, 1_000_000),
+                ("right", 1_800_000, 2_000_000),
+            ],
+        );
+        Ok(())
+    }
+
+    #[test]
     fn mp4_contains_burned_in_captions_and_the_offset_wav_mix() -> Result<()> {
         let directory = tempfile::tempdir()?;
         let source = directory.path().join("元動画 (1).mp4");
@@ -472,6 +543,29 @@ mod tests {
         assert_eq!(ExportSettings::from_selection(2, 1).unwrap().crf(), "26");
         assert!(ExportSettings::from_selection(3, 0).is_err());
         assert!(ExportSettings::from_selection(0, -1).is_err());
+    }
+
+    #[test]
+    fn ai_proposal_prefills_the_same_choices_used_for_export() -> Result<()> {
+        let proposed = ExportSelection::from(ExportPreferences {
+            quality: Some(ExportQuality::High),
+            canvas: Some(ExportCanvas::Portrait),
+        });
+        let settings = ExportSettings::from_selection(proposed.quality, proposed.canvas)?;
+        assert_eq!(settings.crf(), "18");
+        assert!(settings.video_filter().contains("pad=720:1280:"));
+
+        let proposed = ExportSelection::from(ExportPreferences {
+            quality: None,
+            canvas: None,
+        });
+        let settings = ExportSettings::from_selection(proposed.quality, proposed.canvas)?;
+        assert_eq!(settings.crf(), "20");
+        assert_eq!(
+            settings.video_filter(),
+            ExportSettings::default().video_filter()
+        );
+        Ok(())
     }
 
     #[test]

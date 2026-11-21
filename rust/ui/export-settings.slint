@@ -7,6 +7,8 @@ export struct ExportSelection {
 
 export component ExportSettings inherits PopupWindow {
     callback accepted(ExportSelection);
+    in-out property <int> quality-index;
+    in-out property <int> canvas-index;
 
     width: 360px;
     height: 224px;
@@ -26,13 +28,13 @@ export component ExportSettings inherits PopupWindow {
             quality := ComboBox {
                 accessible-label: "画質";
                 model: ["標準", "高画質", "容量優先"];
-                current-index: 0;
+                current-index <=> root.quality-index;
             }
             Text { text: "縦横比"; color: #e8edfa; }
             canvas := ComboBox {
                 accessible-label: "縦横比";
                 model: ["元の映像に合わせる", "横長 16:9 (1280 × 720)", "縦長 9:16 (720 × 1280)"];
-                current-index: 0;
+                current-index <=> root.canvas-index;
             }
             HorizontalLayout {
                 alignment: end;

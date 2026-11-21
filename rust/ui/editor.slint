@@ -46,6 +46,11 @@ export component EditorWindow inherits Window {
     in property <bool> ai-busy;
     in property <bool> ai-cancellable;
     in property <bool> ai-source-available;
+    in property <bool> ai-export-ready;
+    in property <bool> captions-use-source-time;
+    in property <ExportSelection> ai-export-selection;
+    property <int> ai-export-quality;
+    property <int> ai-export-canvas;
 
     callback open-project();
     callback new-project();
@@ -226,7 +231,7 @@ export component EditorWindow inherits Window {
                         color: #a6afc3;
                         wrap: word-wrap;
                     }
-                    if !root.ai-source-available: Text {
+                    if !root.ai-source-available && !root.ai-export-ready: Text {
                         text: "区間を設定していないプロジェクトと全編に対応する字幕が必要です。";
                         color: #a7c6ff;
                         wrap: word-wrap;
@@ -247,6 +252,15 @@ export component EditorWindow inherits Window {
                             clicked => { root.ai-send(); }
                         }
                         Button { text: "中断"; enabled: root.ai-cancellable; clicked => { root.ai-cancel(); } }
+                        if root.ai-export-ready: Button {
+                            text: "書き出し設定を確認";
+                            enabled: !root.exporting && !root.ai-busy;
+                            clicked => {
+                                root.ai-export-quality = root.ai-export-selection.quality;
+                                root.ai-export-canvas = root.ai-export-selection.canvas;
+                                ai-export-settings.show();
+                            }
+                        }
                     }
                     if root.ai-status != "": Text {
                         text: root.ai-status;
@@ -259,7 +273,10 @@ export component EditorWindow inherits Window {
                 horizontal-stretch: 2;
                 min-width: 315px;
                 spacing: 8px;
-                Text { text: "字幕   " + root.captions.length; color: #e8edfa; font-size: 17px; font-weight: 650; }
+                Text {
+                    text: (root.captions-use-source-time ? "字幕（素材時刻）   " : "字幕   ") + root.captions.length;
+                    color: #e8edfa; font-size: 17px; font-weight: 650;
+                }
                 Rectangle {
                     vertical-stretch: 1;
                     forward-focus: caption-keys;
@@ -333,6 +350,13 @@ export component EditorWindow inherits Window {
     export-settings := ExportSettings {
         x: (root.width - self.width) / 2;
         y: (root.height - self.height) / 2;
+        accepted(selection) => { root.export-video(selection); }
+    }
+    ai-export-settings := ExportSettings {
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+        quality-index <=> root.ai-export-quality;
+        canvas-index <=> root.ai-export-canvas;
         accepted(selection) => { root.export-video(selection); }
     }
     if root.show-about: Rectangle {

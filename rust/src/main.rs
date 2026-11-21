@@ -79,6 +79,11 @@ impl Loaded {
         self.project.playback_range(self.video.duration)
     }
 
+    fn caption_time(&self, source_us: i64) -> i64 {
+        let range = self.range();
+        (source_us - range.source_start_us).max(0) + self.project.caption_time_offset(range)
+    }
+
     fn open(mut project: Project, path: PathBuf) -> Result<Self> {
         let proxy = (!project.proxy.as_os_str().is_empty()).then(|| project.proxy.clone());
         let video = VideoWorker::open(project.video.clone(), proxy)?;
@@ -152,6 +157,7 @@ impl Editor {
         self.stop(ui);
         self.invalidate_chat(ui, "プロジェクトが変わったため AI の結果は反映しません");
         ui.set_ai_prompt("".into());
+        ui.set_ai_export_ready(false);
         if !self.chat.is_running() {
             ui.set_ai_status("".into());
         }
@@ -159,7 +165,6 @@ impl Editor {
         self.scrub_pending = None;
         ui.set_frame(slint::Image::default());
         self.last_frame = None;
-        self.caption_overlay.clear_frame();
         self.metrics = Metrics::default();
         ui.set_measuring(false);
         ui.set_has_project(true);
@@ -383,6 +388,7 @@ impl Editor {
             .pick_file()
         {
             loaded.project.captions = import_srt(&path)?;
+            loaded.project.captions_use_source_time = false;
             loaded.dirty = true;
             // The replacement changes the identities and positions of subtitle rows.
             loaded.history = EditHistory::default();
@@ -399,11 +405,14 @@ impl Editor {
             loaded.project.captions.iter().map(caption_row),
         ));
         ui.set_captions(self.captions.clone().into());
-        ui.set_preview_caption(
+        ui.set_captions_use_source_time(loaded.project.captions_use_source_time);
+        self.caption_overlay.clear_frame();
+        self.caption_overlay.rebuild(&loaded.project.captions);
+        let text = self.last_frame.as_ref().and_then(|frame| {
             self.caption_overlay
-                .rebuild(&loaded.project.captions)
-                .into(),
-        );
+                .present(&loaded.project.captions, loaded.caption_time(frame.pts))
+        });
+        ui.set_preview_caption(text.unwrap_or_default().into());
         self.selected = None;
         ui.set_selected(-1);
         ui.set_speaker_text("".into());
@@ -413,7 +422,8 @@ impl Editor {
 
     fn select(&mut self, ui: &EditorWindow, index: i32) -> Option<i64> {
         let row = usize::try_from(index).ok()?;
-        let caption = self.loaded.as_ref()?.project.captions.get(row)?;
+        let loaded = self.loaded.as_ref()?;
+        let caption = loaded.project.captions.get(row)?;
         self.selected = Some(row);
         ui.set_selected(index);
         ui.set_speaker_text(caption.speaker.as_str().into());
@@ -426,7 +436,14 @@ impl Editor {
             )
             .into(),
         );
-        Some(caption.start_us)
+        let range = loaded.range();
+        let offset = loaded.project.caption_time_offset(range);
+        if loaded.project.captions_use_source_time
+            && (caption.end_us <= offset || caption.start_us >= offset + range.duration())
+        {
+            return None;
+        }
+        Some((caption.start_us - offset).max(0))
     }
 
     fn edit_caption(&mut self, ui: &EditorWindow) -> Result<()> {
@@ -471,6 +488,11 @@ impl Editor {
         let range = loaded.range();
         let ai_source_available = loaded.project.clip.is_none();
         ui.set_ai_source_available(ai_source_available);
+        ui.set_captions_use_source_time(loaded.project.captions_use_source_time);
+        if ai_source_available && ui.get_ai_export_ready() {
+            ui.set_ai_export_ready(false);
+            ui.set_ai_status("".into());
+        }
         if !ai_source_available {
             self.invalidate_chat(ui, "素材区間が変わったため AI の結果は反映しません");
         }
@@ -479,25 +501,44 @@ impl Editor {
     }
 
     fn edit_clip(&mut self, ui: &EditorWindow) -> Result<()> {
-        let Some(loaded) = self.loaded.as_mut() else {
+        if self.loaded.is_none() {
             return Ok(());
-        };
-        let before = loaded.range();
+        }
         let range = ClipRange {
             source_start_us: parse_seconds(ui.get_clip_start().as_str())
                 .context("開始時刻を確認してください")?,
             source_end_us: parse_seconds(ui.get_clip_end().as_str())
                 .context("終了時刻を確認してください")?,
         };
-        if before != range
-            && loaded
-                .history
-                .apply(
-                    &mut loaded.project,
-                    loaded.video.duration,
-                    Edit::Clip(Some(range)),
-                )?
-                .is_some()
+        self.apply_clip(ui, range, false)
+    }
+
+    fn apply_clip(
+        &mut self,
+        ui: &EditorWindow,
+        range: ClipRange,
+        source_captions: bool,
+    ) -> Result<()> {
+        let loaded = self
+            .loaded
+            .as_mut()
+            .context("プロジェクトを開いてください")?;
+        let before = loaded.range();
+        if before == range {
+            return Ok(());
+        }
+        let edit = if source_captions && !loaded.project.captions_use_source_time {
+            Edit::ClipWithCaptionBasis {
+                range: Some(range),
+                captions_use_source_time: true,
+            }
+        } else {
+            Edit::Clip(Some(range))
+        };
+        if loaded
+            .history
+            .apply(&mut loaded.project, loaded.video.duration, edit)?
+            .is_some()
         {
             loaded.dirty = true;
             self.refresh_clip(ui, before.source_start_us);
@@ -758,7 +799,7 @@ impl Editor {
         let pts = frame.pts - range.source_start_us;
         if let Some(text) = self
             .caption_overlay
-            .present(&loaded.project.captions, pts.max(0))
+            .present(&loaded.project.captions, loaded.caption_time(frame.pts))
         {
             ui.set_preview_caption(text.into());
         }
@@ -1023,33 +1064,41 @@ impl Editor {
             ui.set_ai_status("編集内容が変わったため AI の結果は反映しません".into());
             return Ok(());
         }
-        let Some(range) = result.range? else {
+        let Some(selection) = result.selection? else {
             ui.set_ai_status("指示に合う区間が見つかりませんでした".into());
             return Ok(());
         };
+        let range = selection.range;
         ensure!(
             range.valid_for(loaded.video.duration)
                 && range.source_start_us >= result.input.bounds.source_start_us
                 && range.source_end_us <= result.input.bounds.source_end_us,
             "AI が対象区間外の時刻を返しました"
         );
+        let whole_source = range == loaded.range();
         // Use the same checked apply path as a manually entered clip edit.
         ui.set_clip_start(seconds_text(range.source_start_us).into());
         ui.set_clip_end(seconds_text(range.source_end_us).into());
-        if let Err(error) = self.edit_clip(ui) {
+        if let Err(error) = self.apply_clip(ui, range, true) {
             let [start, end] = result.input.clip_draft;
             ui.set_clip_start(start.into());
             ui.set_clip_end(end.into());
             return Err(error);
         }
-        ui.set_ai_status(
+        if let Some(preferences) = selection.export {
+            ui.set_ai_export_selection(preferences.into());
+        }
+        ui.set_ai_export_ready(selection.export.is_some());
+        let status = if whole_source {
+            "素材全体を選びました".to_owned()
+        } else {
             format!(
                 "素材の {} – {} を区間に反映しました",
                 timestamp(range.source_start_us),
                 timestamp(range.source_end_us),
             )
-            .into(),
-        );
+        };
+        ui.set_ai_status(status.into());
         Ok(())
     }
 }
