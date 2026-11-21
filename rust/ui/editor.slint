@@ -27,6 +27,7 @@ export component EditorWindow inherits Window {
     in property <bool> can-undo;
     in property <bool> can-redo;
     in property <image> frame;
+    in property <string> preview-caption;
     in property <int> playhead;
     in property <int> selected: -1;
     in property <string> selection-label;
@@ -101,6 +102,30 @@ export component EditorWindow inherits Window {
                         x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
                         source: root.frame;
                         image-fit: contain;
+                    }
+                    if !root.preview-caption.is-empty: Rectangle {
+                        property <float> frame-ratio: root.frame.width / max(1, root.frame.height);
+                        property <length> content-width: min(parent.width - 2px, (parent.height - 2px) * self.frame-ratio);
+                        property <length> content-height: min(parent.height - 2px, (parent.width - 2px) / max(0.001, self.frame-ratio));
+                        width: self.content-width * 0.9;
+                        height: min(caption.preferred-height + 10px, self.content-height * 0.45);
+                        x: (parent.width - self.width) / 2;
+                        y: (parent.height + self.content-height) / 2 - self.height - 6px;
+                        background: #101219dc;
+                        border-radius: 4px;
+                        clip: true;
+                        caption := Text {
+                            x: 6px;
+                            y: 5px;
+                            width: parent.width - 12px;
+                            height: parent.height - 10px;
+                            text: root.preview-caption;
+                            color: #ffffff;
+                            font-size: clamp(parent.content-height / 20, 12px, 28px);
+                            horizontal-alignment: center;
+                            wrap: word-wrap;
+                            overflow: elide;
+                        }
                     }
                     if !root.has-project: Text {
                         width: parent.width; height: parent.height;

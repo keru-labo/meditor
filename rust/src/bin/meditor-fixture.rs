@@ -102,17 +102,30 @@ fn main() -> Result<()> {
     let mut project = Project::new(video, tracks)?;
     project.proxy = proxy;
     project.captions = (0..10_000)
-        .map(|index| Caption {
-            id: (index + 1).to_string(),
-            start_us: index * 6_000,
-            end_us: index * 6_000 + 350_000,
-            speaker: if index % 2 == 0 {
-                "話者 B"
+        .map(|index| {
+            // Keep two overlapping cues readable around the screenshot at 15 seconds.
+            let start_us = if index < 2_400 {
+                index * 6_000
             } else {
-                "話者 A"
+                16_500_000 + (index - 2_400) * 5_650
+            };
+            let (end_us, text) = match index {
+                2_398 => (16_200_000, "次の場面に移ります".into()),
+                2_399 => (16_200_000, "ここからが見どころです".into()),
+                _ => (start_us + 350_000, format!("実況字幕 {}", index + 1)),
+            };
+            Caption {
+                id: (index + 1).to_string(),
+                start_us,
+                end_us,
+                speaker: if index % 2 == 0 {
+                    "話者 B"
+                } else {
+                    "話者 A"
+                }
+                .into(),
+                text,
             }
-            .into(),
-            text: format!("実況字幕 {}", index + 1),
         })
         .collect();
     project.save(&directory.join("fixture.json"))
