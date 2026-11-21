@@ -11,6 +11,7 @@ use meditor_playback::{
     SeekController, SeekMode, VideoSource,
     history::{Edit, EditHistory, EditTarget},
     project::{ClipRange, Project, SECOND, Track, import_srt, parse_seconds},
+    transcription::{TranscriptionCancellation, transcribe_with_cancellation},
 };
 use serde_json::{Value, json};
 use slint::{ComponentHandle, Model, Timer, TimerMode, VecModel};
@@ -97,6 +98,7 @@ impl Loaded {
 struct Editor {
     loaded: Option<Loaded>,
     captions: Rc<VecModel<CaptionRow>>,
+    transcription: Option<TranscriptionJob>,
     selected: Option<usize>,
     seek: SeekController,
     position: i64,
@@ -113,6 +115,11 @@ struct Editor {
     metrics: Metrics,
     smoke: Option<Smoke>,
     export_result: Option<std::sync::mpsc::Receiver<Result<PathBuf>>>,
+}
+
+struct TranscriptionJob {
+    cancellation: TranscriptionCancellation,
+    result: std::sync::mpsc::Receiver<Result<PathBuf>>,
 }
 
 struct Smoke {
@@ -223,6 +230,89 @@ impl Editor {
             ui.set_status("プロジェクトを保存しました".into());
         }
         Ok(())
+    }
+
+    fn transcribe_audio(&mut self, ui: &EditorWindow) -> Result<()> {
+        if let Some(job) = &self.transcription {
+            if job.cancellation.cancel() {
+                ui.set_transcription_cancelling(true);
+                ui.set_status("文字起こしを中止中".into());
+            }
+            return Ok(());
+        }
+        let Some(engine) = rfd::FileDialog::new()
+            .set_title("ローカルの whisper-cli を選択")
+            .pick_file()
+        else {
+            return Ok(());
+        };
+        let Some(model) = rfd::FileDialog::new()
+            .set_title("日本語に対応する whisper モデルを選択")
+            .add_filter("whisper.cpp モデル", &["bin"])
+            .pick_file()
+        else {
+            return Ok(());
+        };
+        let Some(audio) = rfd::FileDialog::new()
+            .set_title("文字起こしするモノラル 16 kHz PCM WAV を選択")
+            .add_filter("PCM WAV", &["wav"])
+            .pick_file()
+        else {
+            return Ok(());
+        };
+        let Some(output) = rfd::FileDialog::new()
+            .set_title("文字起こしの SRT 保存先を選択")
+            .add_filter("SubRip", &["srt"])
+            .set_file_name("transcript.srt")
+            .save_file()
+        else {
+            return Ok(());
+        };
+
+        let (finished, result) = std::sync::mpsc::channel();
+        let cancellation = TranscriptionCancellation::default();
+        let worker_cancellation = cancellation.clone();
+        std::thread::Builder::new()
+            .name("meditor-transcription".into())
+            .spawn(move || {
+                let result = transcribe_with_cancellation(
+                    &engine,
+                    &model,
+                    &audio,
+                    &output,
+                    &worker_cancellation,
+                )
+                .map(|()| output);
+                let _ = finished.send(result);
+            })?;
+        self.transcription = Some(TranscriptionJob {
+            cancellation,
+            result,
+        });
+        ui.set_transcribing(true);
+        ui.set_status("ローカルで文字起こし中".into());
+        Ok(())
+    }
+
+    fn poll_transcription(&mut self, ui: &EditorWindow) {
+        use std::sync::mpsc::TryRecvError;
+        let Some(job) = &self.transcription else {
+            return;
+        };
+        let status = match job.result.try_recv() {
+            Ok(Ok(path)) => format!(
+                "SRT を生成しました: {}（SRT 読込から取り込めます）",
+                path.display()
+            ),
+            Ok(Err(_)) if job.cancellation.is_cancelled() => "文字起こしを中止しました".to_owned(),
+            Ok(Err(error)) => format!("文字起こしに失敗しました: {error:#}"),
+            Err(TryRecvError::Disconnected) => "文字起こし処理が異常終了しました".to_owned(),
+            Err(TryRecvError::Empty) => return,
+        };
+        self.transcription = None;
+        ui.set_transcribing(false);
+        ui.set_transcription_cancelling(false);
+        ui.set_status(status.into());
     }
 
     fn choose_proxy(&mut self, ui: &EditorWindow) -> Result<()> {
@@ -538,6 +628,7 @@ impl Editor {
     }
 
     fn tick(&mut self, ui: &EditorWindow) -> Result<()> {
+        self.poll_transcription(ui);
         if self.loaded.is_none() {
             return Ok(());
         }
@@ -893,6 +984,8 @@ fn bind(ui: &EditorWindow, state: &Rc<RefCell<Editor>>) {
         editor.toggle_play(&ui);
         Ok(())
     });
+    callback!(on_transcribe_audio, |editor, ui| editor
+        .transcribe_audio(&ui));
     callback!(on_select_caption, |editor, ui, index| {
         editor.select(&ui, index);
         Ok(())
@@ -955,6 +1048,10 @@ fn bind(ui: &EditorWindow, state: &Rc<RefCell<Editor>>) {
     ui.window().on_close_requested(move || {
         if let Some(ui) = window.upgrade() {
             let mut editor = state.borrow_mut();
+            if editor.transcription.is_some() {
+                ui.set_status("文字起こしの完了を待つか、中止してから閉じてください".into());
+                return slint::CloseRequestResponse::KeepWindowShown;
+            }
             if editor.export_result.is_some() {
                 ui.set_status("書き出しの完了後に閉じてください".into());
                 return slint::CloseRequestResponse::KeepWindowShown;

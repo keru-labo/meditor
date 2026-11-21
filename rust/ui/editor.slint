@@ -21,6 +21,8 @@ export component EditorWindow inherits Window {
     in property <bool> playing;
     in property <bool> exporting;
     in property <bool> measuring;
+    in property <bool> transcribing;
+    in property <bool> transcription-cancelling;
     in property <bool> can-undo;
     in property <bool> can-redo;
     in property <image> frame;
@@ -46,6 +48,7 @@ export component EditorWindow inherits Window {
     callback toggle-measurement();
     callback export-video();
     callback save-metrics();
+    callback transcribe-audio();
     callback select-caption(int);
     callback goto-caption(int);
     callback update-caption();
@@ -237,6 +240,11 @@ export component EditorWindow inherits Window {
             Text { text: root.status; color: #a6afc3; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
             Button { text: root.measuring ? "計測停止" : "計測開始"; enabled: root.has-project; clicked => { root.toggle-measurement(); } }
             Button { text: "計測保存"; enabled: root.has-project; clicked => { root.save-metrics(); } }
+            Button {
+                text: root.transcription-cancelling ? "中止中" : root.transcribing ? "文字起こしを中止" : "文字起こし";
+                enabled: !root.transcription-cancelling;
+                clicked => { root.transcribe-audio(); }
+            }
         }
     }
     if root.show-about: Rectangle {

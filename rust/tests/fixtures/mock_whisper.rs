@@ -35,6 +35,11 @@ fn main() -> std::io::Result<()> {
             fs::write("../race.srt", b"another writer")?;
             fs::write("transcript.srt", TRANSCRIPT)?;
         }
+        "blocking engine.bin" => {
+            fs::write("transcript.srt", TRANSCRIPT)?;
+            fs::write("../whisper-started", b"started")?;
+            std::thread::sleep(std::time::Duration::from_secs(30));
+        }
         "multilingual model.bin" => fs::write("transcript.srt", TRANSCRIPT)?,
         other => panic!("unexpected fixture: {other}"),
     }
