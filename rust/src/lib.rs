@@ -1,6 +1,7 @@
 //! GUI-thread state for routing seek requests and accepting decoder results.
 
 #![forbid(unsafe_code)]
+pub mod ai;
 pub mod project;
 
 pub mod history;
