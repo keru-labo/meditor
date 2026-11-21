@@ -20,6 +20,8 @@ export component EditorWindow inherits Window {
     in-out property <bool> use-proxy;
     in property <bool> playing;
     in property <bool> measuring;
+    in property <bool> can-undo;
+    in property <bool> can-redo;
     in property <image> frame;
     in property <int> playhead;
     in property <int> selected: -1;
@@ -46,6 +48,8 @@ export component EditorWindow inherits Window {
     callback goto-caption(int);
     callback update-caption();
     callback update-clip();
+    callback undo-edit();
+    callback redo-edit();
     callback scrub(int);
     callback finish-scrub(int);
     callback jump-to(int);
@@ -62,6 +66,8 @@ export component EditorWindow inherits Window {
             Button { text: "新規"; clicked => { root.new-project(); } }
             Button { text: "開く"; clicked => { root.open-project(); } }
             Button { text: "保存"; enabled: root.has-project; clicked => { root.save-project(); } }
+            Button { text: "元に戻す"; enabled: root.can-undo; clicked => { root.undo-edit(); } }
+            Button { text: "やり直す"; enabled: root.can-redo; clicked => { root.redo-edit(); } }
             Button { text: "SRT 読込"; enabled: root.has-project; clicked => { root.import-captions(); } }
             Button { text: "プロキシを選択"; enabled: root.has-project; clicked => { root.choose-proxy(); } }
             Rectangle { horizontal-stretch: 1; }

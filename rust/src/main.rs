@@ -7,6 +7,7 @@ use anyhow::{Context, Result, ensure};
 use audio::AudioMixer;
 use meditor_playback::{
     SeekController, SeekMode, VideoSource,
+    history::{Edit, EditHistory, EditTarget},
     project::{ClipRange, Project, SECOND, Track, import_srt, parse_seconds},
 };
 use serde_json::{Value, json};
@@ -62,6 +63,7 @@ struct Loaded {
     video: VideoWorker,
     audio: Option<AudioMixer>,
     dirty: bool,
+    history: EditHistory,
 }
 
 impl Loaded {
@@ -84,6 +86,7 @@ impl Loaded {
             video,
             audio: None,
             dirty: false,
+            history: EditHistory::default(),
         })
     }
 }
@@ -148,6 +151,7 @@ impl Editor {
         ui.set_use_proxy(has_proxy);
         let status = format!("音声 {} トラック", loaded.project.audio.len());
         self.loaded = Some(loaded);
+        self.refresh_history_controls(ui);
         self.refresh_captions(ui);
         self.show_clip(ui);
         self.seek_original(ui, 0, false);
@@ -265,6 +269,9 @@ impl Editor {
         {
             loaded.project.captions = import_srt(&path)?;
             loaded.dirty = true;
+            // The replacement changes the identities and positions of subtitle rows.
+            loaded.history = EditHistory::default();
+            self.refresh_history_controls(ui);
             self.refresh_captions(ui);
             ui.set_status("字幕を読み込みました".into());
         }
@@ -302,22 +309,38 @@ impl Editor {
         Some(caption.start_us)
     }
 
-    fn edit_caption(&mut self, ui: &EditorWindow) {
+    fn edit_caption(&mut self, ui: &EditorWindow) -> Result<()> {
         let began = Instant::now();
         let Some(loaded) = &mut self.loaded else {
-            return;
+            return Ok(());
         };
-        let Some(index) = self.selected else { return };
-        let caption = &mut loaded.project.captions[index];
+        let Some(index) = self.selected else {
+            return Ok(());
+        };
+        let caption = &loaded.project.captions[index];
         let speaker = ui.get_speaker_text();
         let text = ui.get_caption_text();
-        if caption.speaker != speaker.as_str() || caption.text != text.as_str() {
-            caption.speaker = speaker.to_string();
-            caption.text = text.to_string();
-            self.captions.set_row_data(index, caption_row(caption));
+        if caption.speaker == speaker.as_str() && caption.text == text.as_str() {
+            return Ok(());
+        }
+        let edit = Edit::Caption {
+            row: index,
+            id: caption.id.clone(),
+            speaker: speaker.to_string(),
+            text: text.to_string(),
+        };
+        if loaded
+            .history
+            .apply(&mut loaded.project, loaded.video.duration, edit)?
+            .is_some()
+        {
+            self.captions
+                .set_row_data(index, caption_row(&loaded.project.captions[index]));
             loaded.dirty = true;
+            self.refresh_history_controls(ui);
             self.metrics.record(|| json!({"event":"caption_edit_dispatch", "us": began.elapsed().as_micros() as u64}));
         }
+        Ok(())
     }
 
     fn show_clip(&self, ui: &EditorWindow) {
@@ -337,18 +360,72 @@ impl Editor {
             source_end_us: parse_seconds(ui.get_clip_end().as_str())
                 .context("終了時刻を確認してください")?,
         };
-        if before != range {
-            loaded.project.set_clip(range, loaded.video.duration)?;
+        if before != range
+            && loaded
+                .history
+                .apply(
+                    &mut loaded.project,
+                    loaded.video.duration,
+                    Edit::Clip(Some(range)),
+                )?
+                .is_some()
+        {
             loaded.dirty = true;
-            loaded.audio = None;
-            self.show_clip(ui);
-            self.seek_original(
-                ui,
-                before.source_start_us + self.position - range.source_start_us,
-                false,
-            );
+            self.refresh_clip(ui, before.source_start_us);
+            self.refresh_history_controls(ui);
             ui.set_status("クリップの区間を更新しました".into());
         }
+        Ok(())
+    }
+
+    fn refresh_clip(&mut self, ui: &EditorWindow, previous_start: i64) {
+        let loaded = self.loaded.as_mut().unwrap();
+        let start = loaded.range().source_start_us;
+        loaded.audio = None;
+        self.show_clip(ui);
+        self.seek_original(ui, previous_start + self.position - start, false);
+    }
+
+    fn refresh_history_controls(&self, ui: &EditorWindow) {
+        let history = self.loaded.as_ref().map(|loaded| &loaded.history);
+        ui.set_can_undo(history.is_some_and(EditHistory::can_undo));
+        ui.set_can_redo(history.is_some_and(EditHistory::can_redo));
+    }
+
+    fn replay_history(&mut self, ui: &EditorWindow, redo: bool) -> Result<()> {
+        let Some(loaded) = &mut self.loaded else {
+            return Ok(());
+        };
+        let before = loaded.range();
+        let duration = loaded.video.duration;
+        let target = if redo {
+            loaded.history.redo(&mut loaded.project, duration)?
+        } else {
+            loaded.history.undo(&mut loaded.project, duration)?
+        };
+        let Some(target) = target else {
+            return Ok(());
+        };
+        loaded.dirty = true;
+        match target {
+            EditTarget::Caption(index) => {
+                self.captions
+                    .set_row_data(index, caption_row(&loaded.project.captions[index]));
+                if self.selected == Some(index) {
+                    self.select(ui, index as i32);
+                }
+            }
+            EditTarget::Clip => self.refresh_clip(ui, before.source_start_us),
+        }
+        self.refresh_history_controls(ui);
+        ui.set_status(
+            if redo {
+                "やり直しました"
+            } else {
+                "元に戻しました"
+            }
+            .into(),
+        );
         Ok(())
     }
 
@@ -773,10 +850,9 @@ fn bind(ui: &EditorWindow, state: &Rc<RefCell<Editor>>) {
         }
         Ok(())
     });
-    callback!(on_update_caption, |editor, ui| {
-        editor.edit_caption(&ui);
-        Ok(())
-    });
+    callback!(on_update_caption, |editor, ui| editor.edit_caption(&ui));
+    callback!(on_undo_edit, |editor, ui| editor.replay_history(&ui, false));
+    callback!(on_redo_edit, |editor, ui| editor.replay_history(&ui, true));
     callback!(on_scrub, |editor, ui, value| {
         editor.scrub(&ui, value);
         Ok(())

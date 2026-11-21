@@ -129,12 +129,20 @@ impl Project {
     }
 
     pub fn set_clip(&mut self, range: ClipRange, duration: i64) -> Result<()> {
+        self.set_clip_override(Some(range), duration)
+    }
+
+    pub(crate) fn set_clip_override(
+        &mut self,
+        range: Option<ClipRange>,
+        duration: i64,
+    ) -> Result<()> {
         ensure!(
-            range.valid_for(duration),
+            range.is_none_or(|range| range.valid_for(duration)),
             "素材内の有効な開始・終了時刻を入力してください"
         );
-        self.clip = Some(range);
-        self.version = 2;
+        self.clip = range;
+        self.version = if range.is_some() { 2 } else { 1 };
         Ok(())
     }
 
