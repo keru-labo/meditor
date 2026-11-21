@@ -1,0 +1,12 @@
+valid inputs
+sat
+slider position and source target stay in range
+unsat
+only the final slider value reaches the clip end
+unsat
+playhead fits the slider and its i32 cast
+unsat
+clip edits retain the source position or clamp it to the new clip
+unsat
+decoder clamps the target below the exclusive end
+unsat
