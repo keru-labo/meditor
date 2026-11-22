@@ -8,4 +8,4 @@
 
 再文字起こしの結果が編集済み字幕に重なる場合は、反映前に警告し、対象の字幕を差し替えるか既存の字幕を残すか選べる。指定外の音声・区間の字幕を保持する。 [文字起こし・字幕のシナリオ](transcription.feature)
 
-現在の試用手順は [ローカル文字起こしの試用](local-transcription-preview.md) にある。
+生成した字幕の本文・区間・スタイルを整える操作は [字幕編集](subtitle-editing.md) に記載する。現在の試用手順は [ローカル文字起こしの試用](local-transcription-preview.md) にある。
