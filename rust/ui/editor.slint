@@ -1,5 +1,14 @@
 import { AboutSlint, Button, CheckBox, LineEdit, ListView, TextEdit } from "std-widgets.slint";
 import { ExportSelection, ExportSettings } from "export-settings.slint";
+import { SubtitleStyleDraft, SubtitleStyleSettings } from "subtitle-style-settings.slint";
+
+export struct CaptionAppearance {
+    font-family: string,
+    font-size: int,
+    text-color: color,
+    outline-color: color,
+    outline-width: int,
+}
 
 export struct CaptionRow {
     time-label: string,
@@ -28,6 +37,9 @@ export component EditorWindow inherits Window {
     in property <bool> can-redo;
     in property <image> frame;
     in property <string> preview-caption;
+    in property <CaptionAppearance> caption-appearance;
+    in property <SubtitleStyleDraft> subtitle-style-draft;
+    in-out property <string> subtitle-style-error;
     in property <int> playhead;
     in property <int> selected: -1;
     in property <string> selection-label;
@@ -65,6 +77,7 @@ export component EditorWindow inherits Window {
     callback select-caption(int);
     callback goto-caption(int);
     callback update-caption();
+    callback update-subtitle-style(SubtitleStyleDraft) -> bool;
     callback update-clip();
     callback undo-edit();
     callback redo-edit();
@@ -117,25 +130,43 @@ export component EditorWindow inherits Window {
                         source: root.frame;
                         image-fit: contain;
                     }
-                    if !root.preview-caption.is-empty: Rectangle {
+                    if !root.preview-caption.is-empty: caption-layout := Rectangle {
                         property <float> frame-ratio: root.frame.width / max(1, root.frame.height);
                         property <length> content-width: min(parent.width - 2px, (parent.height - 2px) * self.frame-ratio);
                         property <length> content-height: min(parent.height - 2px, (parent.width - 2px) / max(0.001, self.frame-ratio));
+                        property <length> outline-radius: self.content-height * root.caption-appearance.outline-width / 360;
+                        property <length> text-padding: max(6px, self.outline-radius + 1px);
                         width: self.content-width * 0.9;
-                        height: min(caption.preferred-height + 10px, self.content-height * 0.45);
+                        height: min(caption.preferred-height + self.text-padding * 2, self.content-height * 0.45);
                         x: (parent.width - self.width) / 2;
-                        y: (parent.height + self.content-height) / 2 - self.height - 6px;
-                        background: #101219dc;
-                        border-radius: 4px;
+                        y: (parent.height + self.content-height) / 2 - self.height - self.content-height * 20 / 360 + self.text-padding - self.outline-radius;
                         clip: true;
+                        // The software renderer does not stroke text. Use translated
+                        // copies of the same text behind the fill, with an inner ring for thicker outlines.
+                        for index in (caption-layout.outline-radius == 0px ? 0 : caption-layout.outline-radius > 3px ? 16 : 8): Text {
+                            property <angle> direction: Math.mod(index, 8) * 45deg;
+                            property <length> radius: index < 8 ? parent.outline-radius : parent.outline-radius / 2;
+                            x: caption.x + Math.cos(self.direction) * self.radius;
+                            y: caption.y + Math.sin(self.direction) * self.radius;
+                            width: caption.width;
+                            height: caption.height;
+                            text: caption.text;
+                            font-family: caption.font-family;
+                            font-size: caption.font-size;
+                            color: root.caption-appearance.outline-color;
+                            horizontal-alignment: caption.horizontal-alignment;
+                            wrap: caption.wrap;
+                            overflow: caption.overflow;
+                        }
                         caption := Text {
-                            x: 6px;
-                            y: 5px;
-                            width: parent.width - 12px;
-                            height: parent.height - 10px;
+                            x: parent.text-padding;
+                            y: parent.text-padding;
+                            width: max(0px, parent.width - parent.text-padding * 2);
+                            height: max(0px, parent.height - parent.text-padding * 2);
                             text: root.preview-caption;
-                            color: #ffffff;
-                            font-size: clamp(parent.content-height / 20, 12px, 28px);
+                            font-family: root.caption-appearance.font-family;
+                            font-size: max(1px, parent.content-height * root.caption-appearance.font-size / 360);
+                            color: root.caption-appearance.text-color;
                             horizontal-alignment: center;
                             wrap: word-wrap;
                             overflow: elide;
@@ -273,9 +304,22 @@ export component EditorWindow inherits Window {
                 horizontal-stretch: 2;
                 min-width: 315px;
                 spacing: 8px;
-                Text {
-                    text: (root.captions-use-source-time ? "字幕（素材時刻）   " : "字幕   ") + root.captions.length;
-                    color: #e8edfa; font-size: 17px; font-weight: 650;
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text {
+                        text: (root.captions-use-source-time ? "字幕（素材時刻）   " : "字幕   ") + root.captions.length;
+                        color: #e8edfa; font-size: 17px; font-weight: 650;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+                    Button {
+                        text: "字幕スタイル";
+                        enabled: root.has-project;
+                        clicked => {
+                            root.subtitle-style-error = "";
+                            subtitle-style-settings.show();
+                        }
+                    }
                 }
                 Rectangle {
                     vertical-stretch: 1;
@@ -358,6 +402,13 @@ export component EditorWindow inherits Window {
         quality-index <=> root.ai-export-quality;
         canvas-index <=> root.ai-export-canvas;
         accepted(selection) => { root.export-video(selection); }
+    }
+    subtitle-style-settings := SubtitleStyleSettings {
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+        draft: root.subtitle-style-draft;
+        error: root.subtitle-style-error;
+        accepted(draft) => { return root.update-subtitle-style(draft); }
     }
     if root.show-about: Rectangle {
         background: #b0101219;

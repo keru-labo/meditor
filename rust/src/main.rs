@@ -15,6 +15,7 @@ use meditor_playback::{
     SeekController, SeekMode, VideoSource,
     history::{Edit, EditHistory, EditTarget},
     project::{ClipRange, Project, SECOND, Track, import_srt, parse_seconds},
+    subtitle_style::SubtitleStyle,
     transcription::{TranscriptionCancellation, transcribe_with_cancellation},
 };
 use serde_json::{Value, json};
@@ -186,6 +187,7 @@ impl Editor {
             format!("音声 {} トラック", loaded.project.audio.len())
         };
         self.loaded = Some(loaded);
+        show_subtitle_style(ui, &self.loaded.as_ref().unwrap().project.subtitle_style);
         self.refresh_history_controls(ui);
         self.refresh_captions(ui);
         self.show_clip(ui);
@@ -562,6 +564,38 @@ impl Editor {
         ui.set_can_redo(history.is_some_and(EditHistory::can_redo));
     }
 
+    fn edit_subtitle_style(&mut self, ui: &EditorWindow, draft: SubtitleStyleDraft) -> Result<()> {
+        let loaded = self
+            .loaded
+            .as_mut()
+            .context("プロジェクトを開いてください")?;
+        let style = SubtitleStyle {
+            font_family: draft.font_family.trim().to_owned(),
+            font_size: u16::try_from(draft.font_size).context("文字サイズを確認してください")?,
+            text_color: parse_subtitle_color(&draft.text_color)
+                .context("文字色を確認してください")?,
+            outline_color: parse_subtitle_color(&draft.outline_color)
+                .context("縁取りの色を確認してください")?,
+            outline_width: u8::try_from(draft.outline_width)
+                .context("縁取りの太さを確認してください")?,
+        };
+        if loaded
+            .history
+            .apply(
+                &mut loaded.project,
+                loaded.video.duration,
+                Edit::SubtitleStyle(style),
+            )?
+            .is_some()
+        {
+            loaded.dirty = true;
+            show_subtitle_style(ui, &loaded.project.subtitle_style);
+            self.refresh_history_controls(ui);
+            ui.set_status("字幕スタイルを更新しました".into());
+        }
+        Ok(())
+    }
+
     fn replay_history(&mut self, ui: &EditorWindow, redo: bool) -> Result<()> {
         let Some(loaded) = &mut self.loaded else {
             return Ok(());
@@ -589,6 +623,7 @@ impl Editor {
                 }
             }
             EditTarget::Clip => self.refresh_clip(ui, before.source_start_us),
+            EditTarget::SubtitleStyle => show_subtitle_style(ui, &loaded.project.subtitle_style),
         }
         self.refresh_history_controls(ui);
         ui.set_status(
@@ -1124,6 +1159,35 @@ fn clip_draft(ui: &EditorWindow) -> [String; 2] {
     ]
 }
 
+fn show_subtitle_style(ui: &EditorWindow, style: &SubtitleStyle) {
+    let [red, green, blue] = style.text_color;
+    let [outline_red, outline_green, outline_blue] = style.outline_color;
+    ui.set_caption_appearance(CaptionAppearance {
+        font_family: style.font_family.as_str().into(),
+        font_size: i32::from(style.font_size),
+        text_color: slint::Color::from_rgb_u8(red, green, blue),
+        outline_color: slint::Color::from_rgb_u8(outline_red, outline_green, outline_blue),
+        outline_width: i32::from(style.outline_width),
+    });
+    ui.set_subtitle_style_draft(SubtitleStyleDraft {
+        font_family: style.font_family.as_str().into(),
+        font_size: i32::from(style.font_size),
+        text_color: format!("#{red:02X}{green:02X}{blue:02X}").into(),
+        outline_color: format!("#{outline_red:02X}{outline_green:02X}{outline_blue:02X}").into(),
+        outline_width: i32::from(style.outline_width),
+    });
+}
+
+fn parse_subtitle_color(input: &str) -> Result<[u8; 3]> {
+    let hex = input.trim().strip_prefix('#').unwrap_or(input.trim());
+    ensure!(
+        hex.len() == 6 && hex.bytes().all(|digit| digit.is_ascii_hexdigit()),
+        "#RRGGBB 形式で入力してください"
+    );
+    let [_, red, green, blue] = u32::from_str_radix(hex, 16)?.to_be_bytes();
+    Ok([red, green, blue])
+}
+
 fn caption_row(caption: &meditor_playback::project::Caption) -> CaptionRow {
     CaptionRow {
         time_label: timestamp(caption.start_us).into(),
@@ -1200,6 +1264,22 @@ fn bind(ui: &EditorWindow, state: &Rc<RefCell<Editor>>) {
         Ok(())
     });
     callback!(on_update_caption, |editor, ui| editor.edit_caption(&ui));
+    {
+        let window = ui.as_weak();
+        let state = state.clone();
+        ui.on_update_subtitle_style(move |draft| {
+            let Some(ui) = window.upgrade() else {
+                return false;
+            };
+            match state.borrow_mut().edit_subtitle_style(&ui, draft) {
+                Ok(()) => true,
+                Err(error) => {
+                    ui.set_subtitle_style_error(format!("{error:#}").into());
+                    false
+                }
+            }
+        });
+    }
     callback!(on_undo_edit, |editor, ui| editor.replay_history(&ui, false));
     callback!(on_redo_edit, |editor, ui| editor.replay_history(&ui, true));
     callback!(on_scrub, |editor, ui, value| {

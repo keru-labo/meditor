@@ -1,0 +1,77 @@
+import { Button, LineEdit, SpinBox } from "std-widgets.slint";
+
+export struct SubtitleStyleDraft {
+    font-family: string,
+    font-size: int,
+    text-color: string,
+    outline-color: string,
+    outline-width: int,
+}
+
+export component SubtitleStyleSettings inherits PopupWindow {
+    in property <SubtitleStyleDraft> draft;
+    in property <string> error;
+    callback accepted(SubtitleStyleDraft) -> bool;
+
+    width: 390px;
+    height: 352px;
+    close-policy: PopupClosePolicy.no-auto-close;
+    forward-focus: family;
+
+    Rectangle {
+        background: #252e42;
+        border-radius: 8px;
+        VerticalLayout {
+            padding: 16px;
+            spacing: 10px;
+            alignment: start;
+            Text { text: "字幕スタイル"; font-size: 18px; font-weight: 700; color: #e8edfa; }
+            GridLayout {
+                spacing: 8px;
+                Row {
+                    Text { text: "フォント名"; color: #e8edfa; vertical-alignment: center; }
+                    family := LineEdit { text: root.draft.font-family; accessible-label: "フォント名"; }
+                }
+                Row {
+                    Text { text: "文字サイズ"; color: #e8edfa; vertical-alignment: center; }
+                    size := SpinBox { minimum: 8; maximum: 96; value: root.draft.font-size; accessible-label: "文字サイズ"; }
+                }
+                Row {
+                    Text { text: "文字色"; color: #e8edfa; vertical-alignment: center; }
+                    fill := LineEdit { text: root.draft.text-color; accessible-label: "文字色"; }
+                }
+                Row {
+                    Text { text: "縁取りの色"; color: #e8edfa; vertical-alignment: center; }
+                    outline := LineEdit { text: root.draft.outline-color; accessible-label: "縁取りの色"; }
+                }
+                Row {
+                    Text { text: "縁取りの太さ"; color: #e8edfa; vertical-alignment: center; }
+                    thickness := SpinBox { minimum: 0; maximum: 12; value: root.draft.outline-width; accessible-label: "縁取りの太さ"; }
+                }
+            }
+            Text {
+                text: root.error == "" ? "色は #RRGGBB 形式。縁取りの太さ 0 で縁取りなし。" : root.error;
+                color: root.error == "" ? #a6afc3 : #ffc0b8;
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                alignment: end;
+                spacing: 8px;
+                Button { text: "キャンセル"; clicked => { root.close(); } }
+                Button {
+                    text: "適用";
+                    primary: true;
+                    clicked => {
+                        if root.accepted({
+                            font-family: family.text,
+                            font-size: size.value,
+                            text-color: fill.text,
+                            outline-color: outline.text,
+                            outline-width: thickness.value,
+                        }) { root.close(); }
+                    }
+                }
+            }
+        }
+    }
+}

@@ -2,6 +2,7 @@ use anyhow::Result;
 use meditor_playback::{
     history::{Edit, EditHistory, EditTarget},
     project::{Caption, ClipRange, Project, SECOND},
+    subtitle_style::SubtitleStyle,
 };
 use serde_json::{Value, json};
 use std::fs;
@@ -31,6 +32,118 @@ fn caption(text: &str) -> Edit {
         speaker: "B".into(),
         text: text.into(),
     }
+}
+
+#[test]
+fn subtitle_style_is_persistent_and_reversible_with_existing_edits() -> Result<()> {
+    let folder = tempfile::tempdir()?;
+    let path = folder.path().join("project.json");
+    let mut project = project()?;
+    let mut history = EditHistory::default();
+    let style = SubtitleStyle {
+        font_family: "Yu Gothic UI".into(),
+        font_size: 38,
+        text_color: [255, 220, 0],
+        outline_color: [0, 0, 255],
+        outline_width: 0,
+    };
+    history.apply(&mut project, DURATION, caption("ボス戦"))?;
+    history.apply(&mut project, DURATION, Edit::Clip(Some(TRIM)))?;
+    assert!(matches!(
+        history.apply(&mut project, DURATION, Edit::SubtitleStyle(style.clone()))?,
+        Some(EditTarget::SubtitleStyle)
+    ));
+    project.save_with_history(&path, &history)?;
+
+    let mut project = Project::load(&path)?;
+    let mut history = project.take_edit_history(DURATION)?;
+    assert_eq!(project.subtitle_style, style);
+    assert!(matches!(
+        history.undo(&mut project, DURATION)?,
+        Some(EditTarget::SubtitleStyle)
+    ));
+    assert_eq!(project.subtitle_style, SubtitleStyle::default());
+    assert_eq!(project.clip, Some(TRIM));
+    assert_eq!(project.captions[0].text, "ボス戦");
+    project.save_with_history(&path, &history)?;
+    let saved: Value = serde_json::from_slice(&fs::read(&path)?)?;
+    assert!(saved.get("subtitle_style").is_none());
+
+    let mut project = Project::load(&path)?;
+    let mut history = project.take_edit_history(DURATION)?;
+    assert_eq!(project.subtitle_style, SubtitleStyle::default());
+    assert!(matches!(
+        history.redo(&mut project, DURATION)?,
+        Some(EditTarget::SubtitleStyle)
+    ));
+    assert_eq!(project.subtitle_style, style);
+    assert!(matches!(
+        history.undo(&mut project, DURATION)?,
+        Some(EditTarget::SubtitleStyle)
+    ));
+    assert!(matches!(
+        history.undo(&mut project, DURATION)?,
+        Some(EditTarget::Clip)
+    ));
+    assert!(matches!(
+        history.undo(&mut project, DURATION)?,
+        Some(EditTarget::Caption(0))
+    ));
+    Ok(())
+}
+
+#[test]
+fn invalid_subtitle_style_edits_cannot_replace_the_project_or_its_history() -> Result<()> {
+    let folder = tempfile::tempdir()?;
+    let path = folder.path().join("project.json");
+    let mut project = project()?;
+    let mut history = EditHistory::default();
+    history.apply(&mut project, DURATION, Edit::Clip(Some(TRIM)))?;
+    history.undo(&mut project, DURATION)?;
+    for (font_family, font_size, outline_width) in [
+        ("", 24, 2),
+        (" Arial ", 24, 2),
+        ("Arial,Style", 24, 2),
+        ("Arial\nDialogue", 24, 2),
+        ("Arial", 7, 2),
+        ("Arial", 97, 2),
+        ("Arial", 24, 13),
+    ] {
+        let bad = SubtitleStyle {
+            font_family: font_family.into(),
+            font_size,
+            outline_width,
+            ..SubtitleStyle::default()
+        };
+        assert!(
+            history
+                .apply(&mut project, DURATION, Edit::SubtitleStyle(bad))
+                .is_err()
+        );
+        assert_eq!(project.subtitle_style, SubtitleStyle::default());
+        assert!(history.can_redo());
+    }
+
+    project.save_with_history(&path, &history)?;
+    let mut valid: Value = serde_json::from_slice(&fs::read(&path)?)?;
+    assert_eq!(
+        Project::load(&path)?.subtitle_style,
+        SubtitleStyle::default()
+    );
+    let bad = SubtitleStyle {
+        font_family: "\\fnUnexpected".into(),
+        ..SubtitleStyle::default()
+    };
+    valid["edit_history"]["undo"] = json!([{"kind":"subtitle_style","value":bad}]);
+    fs::write(&path, serde_json::to_vec(&valid)?)?;
+    let mut reopened = Project::load(&path)?;
+    assert!(reopened.take_edit_history(DURATION).is_err());
+    assert_eq!(reopened.subtitle_style, SubtitleStyle::default());
+
+    valid["subtitle_style"] = serde_json::to_value(bad)?;
+    fs::write(&path, serde_json::to_vec(&valid)?)?;
+    assert!(Project::load(&path).is_err());
+    Ok(())
 }
 
 #[test]

@@ -1,4 +1,4 @@
-use crate::history::EditHistory;
+use crate::{history::EditHistory, subtitle_style::SubtitleStyle};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
@@ -63,6 +63,8 @@ pub struct Project {
     pub proxy: PathBuf,
     pub audio: Vec<Track>,
     pub captions: Vec<Caption>,
+    #[serde(default, skip_serializing_if = "SubtitleStyle::is_default")]
+    pub subtitle_style: SubtitleStyle,
     #[serde(default, skip_serializing_if = "is_false")]
     pub captions_use_source_time: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -79,6 +81,7 @@ impl Project {
             proxy: PathBuf::new(),
             audio,
             captions: Vec::new(),
+            subtitle_style: SubtitleStyle::default(),
             captions_use_source_time: false,
             clip: None,
             edit_history: None,
@@ -194,6 +197,7 @@ impl Project {
 
     fn validate(&self) -> Result<()> {
         ensure!(!self.video.as_os_str().is_empty(), "元動画が必要です");
+        self.subtitle_style.validate()?;
         match (self.version, self.clip) {
             (1, None) => {}
             (2, Some(range)) => ensure!(range.valid_for(MAX_DURATION), "素材区間が無効です"),
