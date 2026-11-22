@@ -1,6 +1,9 @@
-//! Reversible caption and clip edits.
+//! Reversible caption, subtitle style and clip edits.
 
-use crate::project::{ClipRange, Project};
+use crate::{
+    project::{ClipRange, Project},
+    subtitle_style::SubtitleStyle,
+};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::value::{RawValue, to_raw_value};
@@ -31,11 +34,13 @@ pub enum Edit {
         range: Option<ClipRange>,
         captions_use_source_time: bool,
     },
+    SubtitleStyle(SubtitleStyle),
 }
 
 pub enum EditTarget {
     Caption(usize),
     Clip,
+    SubtitleStyle,
 }
 
 impl Edit {
@@ -87,6 +92,14 @@ impl Edit {
                     captions_use_source_time,
                 );
                 Ok(Some(EditTarget::Clip))
+            }
+            Self::SubtitleStyle(style) => {
+                style.validate()?;
+                if project.subtitle_style == *style {
+                    return Ok(None);
+                }
+                mem::swap(&mut project.subtitle_style, style);
+                Ok(Some(EditTarget::SubtitleStyle))
             }
         }
     }
@@ -222,6 +235,7 @@ fn validate_sequence(edits: &[Edit], project: &Project, duration: i64) -> Result
     );
     let mut clip = project.clip;
     let mut captions_use_source_time = project.captions_use_source_time;
+    let mut subtitle_style = &project.subtitle_style;
     let mut captions = HashMap::new();
     for edit in edits.iter().rev() {
         match edit {
@@ -261,6 +275,14 @@ fn validate_sequence(edits: &[Edit], project: &Project, duration: i64) -> Result
                 );
                 clip = *range;
                 captions_use_source_time = *next_basis;
+            }
+            Edit::SubtitleStyle(style) => {
+                style.validate()?;
+                ensure!(
+                    subtitle_style != style,
+                    "作業履歴の字幕スタイルが変更前と同じです"
+                );
+                subtitle_style = style;
             }
         }
     }

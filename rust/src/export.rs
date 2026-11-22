@@ -4,6 +4,7 @@ use anyhow::{Context, Result, ensure};
 use meditor_playback::{
     ai::{ExportCanvas, ExportPreferences, ExportQuality},
     project::{Caption, ClipRange, Project, SECOND, Track},
+    subtitle_style::SubtitleStyle,
 };
 use std::{
     fs::{self, File},
@@ -14,10 +15,9 @@ use std::{
 const CAPTION_HEADER: &str = "[Script Info]\n\
     ScriptType: v4.00+\nPlayResX: 640\nPlayResY: 360\nWrapStyle: 0\n\
     [V4+ Styles]\n\
-    Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding\n\
-    Style: Default,sans-serif,24,&H00FFFFFF,&H00FFFFFF,&H00101010,&H00000000,0,0,0,0,100,100,0,0,1,2,0,2,16,16,20,1\n\
-    [Events]\n\
-    Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text\n";
+    Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding\n";
+const CAPTION_EVENTS: &str =
+    "[Events]\nFormat: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text\n";
 
 #[derive(Clone, Copy, Default)]
 pub(crate) struct ExportSettings {
@@ -106,6 +106,7 @@ pub(crate) struct ExportSnapshot {
     range: ClipRange,
     audio: Vec<Track>,
     captions: Vec<Caption>,
+    subtitle_style: SubtitleStyle,
     settings: ExportSettings,
 }
 
@@ -138,6 +139,7 @@ impl ExportSnapshot {
             range,
             audio: project.audio.clone(),
             captions,
+            subtitle_style: project.subtitle_style.clone(),
             settings,
         }
     }
@@ -201,7 +203,7 @@ impl ExportSnapshot {
         if !self.captions.is_empty() {
             fs::write(
                 workspace.path().join("captions.ass"),
-                caption_script(&self.captions, self.range.duration()),
+                caption_script(&self.captions, self.range.duration(), &self.subtitle_style)?,
             )?;
             // Subtitle path stays constant, including when the project path contains filter syntax.
             video_filter.push_str(",ass=filename=captions.ass");
@@ -295,9 +297,23 @@ fn ass_time(micros: i64) -> String {
     )
 }
 
-fn caption_script(captions: &[Caption], duration: i64) -> String {
+fn ass_color([red, green, blue]: [u8; 3]) -> String {
+    format!("&H00{blue:02X}{green:02X}{red:02X}")
+}
+
+fn caption_script(captions: &[Caption], duration: i64, style: &SubtitleStyle) -> Result<String> {
     use std::fmt::Write as _;
+    style.validate()?;
     let mut script = CAPTION_HEADER.to_owned();
+    let text_color = ass_color(style.text_color);
+    let outline_color = ass_color(style.outline_color);
+    // BorderStyle 1 outlines glyphs without a rectangular backing. Shadow is disabled.
+    let _ = writeln!(
+        script,
+        "Style: Default,{},{},{text_color},{text_color},{outline_color},&HFF000000,0,0,0,0,100,100,0,0,1,{},0,2,16,16,20,1",
+        style.font_family, style.font_size, style.outline_width,
+    );
+    script.push_str(CAPTION_EVENTS);
     for caption in captions {
         let end = caption.end_us.min(duration);
         if caption.start_us >= end {
@@ -330,7 +346,7 @@ fn caption_script(captions: &[Caption], duration: i64) -> String {
             ass_time(end),
         );
     }
-    script
+    Ok(script)
 }
 
 #[cfg(test)]
@@ -353,7 +369,7 @@ mod tests {
     }
 
     #[test]
-    fn caption_script_keeps_plain_text_and_clips_to_timeline_end() {
+    fn caption_script_keeps_plain_text_and_clips_to_timeline_end() -> Result<()> {
         let cue = Caption {
             id: "one".into(),
             start_us: 100_000,
@@ -361,10 +377,95 @@ mod tests {
             speaker: "話者A".into(),
             text: "first\r\n{\\pos(1,1)}".into(),
         };
-        let script = caption_script(&[cue], 2_000_000);
+        let script = caption_script(&[cue], 2_000_000, &SubtitleStyle::default())?;
         assert!(script.contains("0:00:00.10,0:00:02.00"));
         assert!(script.contains("話者A: first\\N\\{\\\u{2060}pos(1,1)\\}"));
         assert_eq!(script.matches("Dialogue:").count(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn caption_script_uses_opaque_bgr_glyph_colors_without_a_box() -> Result<()> {
+        let mut style = SubtitleStyle {
+            font_family: "Yu Gothic UI".into(),
+            font_size: 40,
+            text_color: [0x12, 0x34, 0x56],
+            outline_color: [0xAB, 0xCD, 0xEF],
+            outline_width: 0,
+        };
+        let script = caption_script(&[], 1_000_000, &style)?;
+        assert!(script.contains(
+            "Style: Default,Yu Gothic UI,40,&H00563412,&H00563412,&H00EFCDAB,&HFF000000,0,0,0,0,100,100,0,0,1,0,0,2,16,16,20,1\n"
+        ));
+        style.font_family = "Arial,24".into();
+        assert!(caption_script(&[], 1_000_000, &style).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn mp4_burns_the_captured_text_and_outline_colors() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let source = directory.path().join("subtitle-style.mp4");
+        ffmpeg(
+            &[
+                "-f",
+                "lavfi",
+                "-i",
+                "color=0x238B45:size=320x180:rate=5:duration=0.4",
+                "-c:v",
+                "libx264",
+            ],
+            &source,
+        )?;
+        let mut project = Project::new(source, vec![])?;
+        project.captions.push(Caption {
+            id: "title".into(),
+            start_us: 0,
+            end_us: 400_000,
+            speaker: String::new(),
+            text: "STYLE".into(),
+        });
+        project.subtitle_style = SubtitleStyle {
+            font_size: 72,
+            text_color: [255, 240, 0],
+            outline_color: [255, 0, 255],
+            outline_width: 12,
+            ..SubtitleStyle::default()
+        };
+        let snapshot = ExportSnapshot::capture(&project, 400_000, 0, 0, ExportSettings::default());
+        project.subtitle_style = SubtitleStyle::default();
+        let output = snapshot.write(directory.path().join("styled.mp4"))?;
+
+        let pixels = ffmpeg(
+            &[
+                "-i",
+                output.to_str().unwrap(),
+                "-frames:v",
+                "1",
+                "-pix_fmt",
+                "rgb24",
+                "-f",
+                "rawvideo",
+                "-threads",
+                "1",
+            ],
+            Path::new("pipe:1"),
+        )?;
+        assert_eq!(pixels.len(), 320 * 180 * 3);
+        let (pixels, _) = pixels.as_chunks::<3>();
+        assert!(
+            pixels
+                .iter()
+                .any(|&[red, green, blue]| red > 170 && green > 150 && blue < 90),
+            "expected yellow glyphs in the decoded frame"
+        );
+        assert!(
+            pixels
+                .iter()
+                .any(|&[red, green, blue]| red > 170 && green < 90 && blue > 160),
+            "expected a magenta outline in the decoded frame"
+        );
+        Ok(())
     }
 
     #[test]
