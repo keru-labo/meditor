@@ -10,6 +10,8 @@ export struct CaptionAppearance {
     outline-width: int,
 }
 
+export enum ScreenshotPanel { Editor, SubtitlePreview, SubtitleStyle, AiEdit, ExportSettings }
+
 export struct CaptionRow {
     time-label: string,
     speaker: string,
@@ -90,6 +92,14 @@ export component EditorWindow inherits Window {
     callback ai-send();
     callback ai-cancel();
     callback ai-caption-edit();
+
+    public function show-screenshot-panel(panel: ScreenshotPanel) {
+        subtitle-style-settings.close();
+        export-settings.close();
+        root.show-ai-chat = panel == ScreenshotPanel.AiEdit;
+        if panel == ScreenshotPanel.SubtitleStyle { subtitle-style-settings.show(); }
+        if panel == ScreenshotPanel.ExportSettings { export-settings.show(); }
+    }
 
     VerticalLayout {
         padding: 16px;

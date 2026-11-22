@@ -139,10 +139,23 @@ struct TranscriptionJob {
 }
 
 struct Smoke {
-    screenshot: Option<PathBuf>,
+    screenshots: Option<ScreenshotOutput>,
     deadline: Instant,
     phase: SmokePhase,
 }
+
+enum ScreenshotOutput {
+    Single(PathBuf),
+    Features(PathBuf),
+}
+
+const FEATURE_SCREENSHOTS: [(&str, ScreenshotPanel); 5] = [
+    ("editor.png", ScreenshotPanel::Editor),
+    ("subtitle-preview.png", ScreenshotPanel::SubtitlePreview),
+    ("subtitle-style.png", ScreenshotPanel::SubtitleStyle),
+    ("ai-edit.png", ScreenshotPanel::AiEdit),
+    ("export-settings.png", ScreenshotPanel::ExportSettings),
+];
 
 #[derive(Clone, Copy, Debug)]
 enum SmokePhase {
@@ -150,7 +163,7 @@ enum SmokePhase {
     Playing,
     Proxy,
     Resuming,
-    Capture(Instant),
+    Capture { ready_at: Instant, index: usize },
 }
 
 impl Editor {
@@ -932,23 +945,46 @@ impl Editor {
                     "元動画と音声で再開できません"
                 );
                 self.stop(ui);
-                SmokePhase::Capture(now + Duration::from_millis(100))
+                SmokePhase::Capture {
+                    ready_at: now + Duration::from_millis(100),
+                    index: 0,
+                }
             }
-            SmokePhase::Capture(ready_at) if now >= ready_at => {
-                if let Some(path) = &smoke.screenshot {
-                    let pixels = ui.window().take_snapshot().map_err(anyhow::Error::msg)?;
-                    let rgb: Vec<_> = pixels
-                        .as_slice()
-                        .iter()
-                        .flat_map(|pixel| [pixel.r, pixel.g, pixel.b])
-                        .collect();
-                    image::save_buffer(
-                        path,
-                        &rgb,
-                        pixels.width(),
-                        pixels.height(),
-                        image::ColorType::Rgb8,
-                    )?;
+            SmokePhase::Capture { ready_at, index } if now >= ready_at => {
+                match &smoke.screenshots {
+                    Some(ScreenshotOutput::Single(path)) => capture_window(ui, path)?,
+                    Some(ScreenshotOutput::Features(directory)) => {
+                        if index == 0 {
+                            std::fs::create_dir_all(directory)?;
+                        }
+                        let (name, _) = FEATURE_SCREENSHOTS[index];
+                        capture_window(ui, &directory.join(name))?;
+                        let next = index + 1;
+                        if let Some((_, panel)) = FEATURE_SCREENSHOTS.get(next) {
+                            if *panel == ScreenshotPanel::SubtitlePreview {
+                                show_subtitle_style(
+                                    ui,
+                                    &SubtitleStyle {
+                                        font_size: 36,
+                                        text_color: [255, 211, 84],
+                                        outline_color: [24, 35, 79],
+                                        outline_width: 4,
+                                        ..SubtitleStyle::default()
+                                    },
+                                );
+                            }
+                            if *panel == ScreenshotPanel::AiEdit {
+                                ui.set_ai_prompt("ボス戦の感想を字幕付きの縦動画にして".into());
+                            }
+                            ui.invoke_show_screenshot_panel(*panel);
+                            self.smoke.as_mut().unwrap().phase = SmokePhase::Capture {
+                                ready_at: now + Duration::from_millis(150),
+                                index: next,
+                            };
+                            return Ok(false);
+                        }
+                    }
+                    None => {}
                 }
                 slint::quit_event_loop().map_err(anyhow::Error::msg)?;
                 self.smoke = None;
@@ -1373,6 +1409,28 @@ struct Launch {
     smoke: Option<Smoke>,
 }
 
+fn capture_window(ui: &EditorWindow, path: &std::path::Path) -> Result<()> {
+    let pixels = ui.window().take_snapshot().map_err(anyhow::Error::msg)?;
+    let rgb: Vec<_> = pixels
+        .as_slice()
+        .iter()
+        .flat_map(|pixel| [pixel.r, pixel.g, pixel.b])
+        .collect();
+    image::save_buffer(
+        path,
+        &rgb,
+        pixels.width(),
+        pixels.height(),
+        image::ColorType::Rgb8,
+    )
+    .with_context(|| {
+        format!(
+            "スクリーンショットを保存できませんでした ({})",
+            path.display()
+        )
+    })
+}
+
 fn arguments(mut args: impl Iterator<Item = OsString>) -> Result<Launch> {
     let Some(first) = args.next() else {
         return Ok(Launch {
@@ -1380,11 +1438,22 @@ fn arguments(mut args: impl Iterator<Item = OsString>) -> Result<Launch> {
             smoke: None,
         });
     };
-    let launch = if first == "--smoke-test" {
+    let launch = if first == "--smoke-test" || first == "--feature-screenshots" {
+        let project = args.next().context("合成プロジェクトを指定してください")?;
+        let screenshots = if first == "--feature-screenshots" {
+            Some(ScreenshotOutput::Features(
+                args.next()
+                    .context("スクリーンショットの保存フォルダーを指定してください")?
+                    .into(),
+            ))
+        } else {
+            args.next()
+                .map(|path| ScreenshotOutput::Single(path.into()))
+        };
         Launch {
-            project: Some(args.next().context("--smoke-test PROJECT [PNG]")?.into()),
+            project: Some(project.into()),
             smoke: Some(Smoke {
-                screenshot: args.next().map(PathBuf::from),
+                screenshots,
                 deadline: Instant::now() + Duration::from_secs(45),
                 phase: SmokePhase::FirstFrame,
             }),
@@ -1397,7 +1466,7 @@ fn arguments(mut args: impl Iterator<Item = OsString>) -> Result<Launch> {
     };
     ensure!(
         args.next().is_none(),
-        "meditor [PROJECT] または meditor --smoke-test PROJECT [PNG]"
+        "meditor [PROJECT] | --smoke-test PROJECT [PNG] | --feature-screenshots PROJECT DIRECTORY"
     );
     Ok(launch)
 }
