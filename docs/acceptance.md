@@ -18,9 +18,17 @@
 
 ## PR で Windows の画面を確認する
 
-同じリポジトリのブランチから作成した PR では、CI が **Windows プレビュー** コメントに PNG を直接表示します。再実行すると同じコメントが更新されます。PNG はコメントから表示できるよう、専用の `ci/screenshots/pr-番号` ブランチに保存します。フォークからの PR では画像投稿用の書き込み権限がないため、**Checks → Windows tests and screenshot → Details** から実行を開き、Artifacts の画像を確認できます。
+同じリポジトリのブランチから作成した PR では、CI が **Windows の機能別スクリーンショット** コメントに画像を直接表示する。編集画面、字幕スタイルを適用したプレビュー、字幕スタイル設定、AI 編集、MP4 書き出し設定の5枚を撮影する。再実行すると同じコメントが更新される。PNG は専用の `ci/screenshots/pr-番号` ブランチに保存する。フォークからの PR では **Checks → Windows tests and screenshot → Details** から実行を開き、Artifacts で画像を確認できる。
 
-Windows ジョブは MSVC と SHA-256 で検証した FFmpeg 共有 SDK で Rust 版をビルドし、受入テストと GUI のスモークテストを実行します。GUI は元動画を再生し、プロキシの最新シークを採用し、音声付きで元動画に戻れたところで Slint のウィンドウ内容を PNG に保存します。音声機器は SDL のダミーデバイスを使用します。
+Windows ジョブは MSVC と SHA-256 で検証した FFmpeg 共有 SDK で Rust 版をビルドし、受入テストと GUI のスモークテストを実行する。GUI は元動画を再生し、プロキシの最新シークを採用し、音声付きで元動画に戻れたところで画面を順番に切り替えて PNG に保存する。AI 編集画面の入力は表示用で、Codex には送信しない。
+
+同じ画面をローカルで撮る場合は、合成プロジェクトと保存先ディレクトリを指定する。
+
+```powershell
+$env:SDL_AUDIODRIVER = 'dummy'
+cargo run --manifest-path rust/Cargo.toml --locked --release --bin meditor-fixture -- artifacts/fixture
+cargo run --manifest-path rust/Cargo.toml --locked --release --bin meditor -- --feature-screenshots artifacts/fixture/fixture.json artifacts/screenshots
+```
 
 ## Rust のシーク制御
 
