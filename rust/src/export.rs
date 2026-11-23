@@ -316,15 +316,10 @@ fn caption_script(captions: &[Caption], duration: i64, style: &SubtitleStyle) ->
     script.push_str(CAPTION_EVENTS);
     for caption in captions {
         let end = caption.end_us.min(duration);
-        if caption.start_us >= end {
+        if caption.text.is_empty() || caption.start_us >= end {
             continue;
         }
-        let text = if caption.speaker.is_empty() {
-            caption.text.clone()
-        } else {
-            format!("{}: {}", caption.speaker, caption.text)
-        };
-        let text = text.replace("\r\n", "\n").replace('\r', "\n");
+        let text = caption.text.replace("\r\n", "\n").replace('\r', "\n");
         let mut encoded = String::with_capacity(text.len());
         for ch in text.chars() {
             match ch {
@@ -375,11 +370,18 @@ mod tests {
             start_us: 100_000,
             end_us: 3_000_000,
             speaker: "話者A".into(),
-            text: "first\r\n{\\pos(1,1)}".into(),
+            text: "A: first\r\n{\\pos(1,1)}".into(),
         };
-        let script = caption_script(&[cue], 2_000_000, &SubtitleStyle::default())?;
+        let empty = Caption {
+            id: "empty".into(),
+            speaker: "話者B".into(),
+            text: String::new(),
+            ..cue.clone()
+        };
+        let script = caption_script(&[cue, empty], 2_000_000, &SubtitleStyle::default())?;
         assert!(script.contains("0:00:00.10,0:00:02.00"));
-        assert!(script.contains("話者A: first\\N\\{\\\u{2060}pos(1,1)\\}"));
+        assert!(script.contains(",,A: first\\N\\{\\\u{2060}pos(1,1)\\}"));
+        assert!(!script.contains("話者"));
         assert_eq!(script.matches("Dialogue:").count(), 1);
         Ok(())
     }
