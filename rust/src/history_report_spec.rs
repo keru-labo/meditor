@@ -57,6 +57,7 @@ const CAPTURES: [(&str, &[Stage]); 2] = [
 ];
 
 pub(super) struct ScenarioSpec {
+    pub evidence_id: &'static str,
     pub name: String,
     pub stages: Vec<Vec<SpecStep>>,
 }
@@ -83,7 +84,7 @@ fn parse(source: &str) -> Result<Vec<ScenarioSpec>> {
         .collect()
 }
 
-fn bind_scenario(feature: &Feature, tag: &str, stages: &[Stage]) -> Result<ScenarioSpec> {
+fn bind_scenario(feature: &Feature, tag: &'static str, stages: &[Stage]) -> Result<ScenarioSpec> {
     let mut matches = feature
         .scenarios
         .iter()
@@ -128,6 +129,7 @@ fn bind_scenario(feature: &Feature, tag: &str, stages: &[Stage]) -> Result<Scena
         offset = end;
     }
     Ok(ScenarioSpec {
+        evidence_id: tag,
         name: scenario.name.clone(),
         stages: captured_stages,
     })
@@ -145,6 +147,8 @@ mod tests {
             1,
         ))?;
         assert_eq!(cases.len(), 2);
+        assert_eq!(cases[0].evidence_id, "ui-redo-after-edit");
+        assert_eq!(cases[1].evidence_id, "ui-reopen-history");
         assert_eq!(cases[0].name, "変更したシナリオ名");
         assert!(cases[0].stages[0].is_empty());
         let keywords: Vec<_> = cases[0].stages[2]

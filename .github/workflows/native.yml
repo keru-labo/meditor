@@ -27,8 +27,21 @@ jobs:
       - name: Install test dependencies
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends ca-certificates curl git build-essential pkg-config libclang-dev libfontconfig-dev libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libsdl2-dev ffmpeg xvfb xauth libxkbcommon-x11-0 fonts-noto-cjk python3
+          apt-get install -y --no-install-recommends ca-certificates curl git build-essential pkg-config libclang-dev libfontconfig-dev libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libsdl2-dev ffmpeg xvfb xauth libxkbcommon-x11-0 fonts-noto-cjk python3 python3-venv
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Collect the Gherkin catalogue
+        id: catalogue
+        if: github.event_name == 'pull_request'
+        run: python3 tools/gherkin_report_catalog.py artifacts/bdd-catalogue
+      - name: Upload the Gherkin catalogue
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: meditor-bdd-catalogue-${{ github.run_attempt }}
+          path: artifacts/bdd-catalogue/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
       - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
         with:
           toolchain: '1.100.0'
@@ -58,19 +71,34 @@ jobs:
         if: ${{ !cancelled() && hashFiles('artifacts/history-report/report.json') != '' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: meditor-history-report
+          # Keep the first-attempt name for the publisher already on main.
+          name: ${{ github.run_attempt == '1' && 'meditor-history-report' || format('meditor-history-report-{0}', github.run_attempt) }}
           path: artifacts/history-report/
           if-no-files-found: error
           retention-days: 14
       - name: Verify the HTML report with the captured screenshots
-        if: ${{ !cancelled() && hashFiles('artifacts/history-report/report.json') != '' }}
+        if: ${{ !cancelled() && steps.catalogue.outcome == 'success' }}
+        shell: bash
         env:
           PR: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          (cd artifacts/history-report && python3 -m zipfile -c ../history-report.zip report.json ./*.png)
-          python3 tools/render-history-report.py artifacts/history-report.zip artifacts/history-report-preview \
-            --pr "$PR" --sha "$HEAD_SHA" --run "$GITHUB_RUN_ID"
+          python3 -m venv "$RUNNER_TEMP/report-venv"
+          python="$RUNNER_TEMP/report-venv/bin/python"
+          "$python" -m pip install --require-hashes --only-binary=:all: -r tools/docs-check-requirements.txt
+          "$python" -m unittest discover -s tools -p 'test_*report*.py'
+          (
+            cd artifacts/bdd-catalogue
+            mapfile -d '' features < <(find docs/features -type f -name '*.feature' -print0)
+            "$python" -m zipfile -c ../bdd-catalogue.zip "${features[@]}"
+          )
+          evidence=()
+          if [ -f artifacts/history-report/report.json ]; then
+            (cd artifacts/history-report && "$python" -m zipfile -c ../history-report.zip report.json ./*.png)
+            evidence=(--evidence artifacts/history-report.zip)
+          fi
+          "$python" tools/render-history-report.py artifacts/bdd-catalogue.zip artifacts/history-report-preview \
+            --pr "$PR" --sha "$HEAD_SHA" --run "$GITHUB_RUN_ID" "${evidence[@]}"
           test -s artifacts/history-report-preview/index.html
       - name: Verify the history BDD detects a known regression
         shell: bash

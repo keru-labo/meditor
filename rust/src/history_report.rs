@@ -31,6 +31,7 @@ struct Report {
 
 #[derive(Serialize)]
 struct Scenario {
+    evidence_id: &'static str,
     name: String,
     steps: Vec<Step>,
 }
@@ -238,6 +239,7 @@ pub(super) fn run(
         scenarios: specs
             .iter()
             .map(|spec| Scenario {
+                evidence_id: spec.evidence_id,
                 name: spec.name.clone(),
                 steps: Vec::new(),
             })

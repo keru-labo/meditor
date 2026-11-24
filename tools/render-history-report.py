@@ -7,11 +7,20 @@ import json
 import re
 import struct
 import zipfile
+from dataclasses import dataclass
 from pathlib import Path
 
+from gherkin_report_catalog import read_catalog
+
 PNG_HEADER = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
-STEP_COUNTS = (3, 4)
+CAPTURE_STAGE_COUNTS = {"ui-redo-after-edit": 3, "ui-reopen-history": 4}
 IMAGE_LIMIT = 2 * 1024 * 1024
+
+
+@dataclass
+class Evidence:
+    failed: bool
+    stages: list[str]
 
 
 def require(condition, message):
@@ -24,24 +33,38 @@ def text(value):
     return html.escape(value)
 
 
-def read_report(archive, destination):
+def read_report(archive, destination, catalogue):
     files = {file.filename: file for file in archive.infolist()}
     require(
         len(files) == len(archive.infolist())
         and all(re.fullmatch(r"report\.json|[12]-[1-4]\.png", name) for name in files),
         "Unexpected report files",
     )
-    require(files["report.json"].file_size <= 64 * 1024, "Report JSON is too large")
+    require("report.json" in files and files["report.json"].file_size <= 64 * 1024, "Invalid report JSON")
     results = json.loads(archive.read("report.json"))["scenarios"]
-    require(isinstance(results, list) and len(results) == len(STEP_COUNTS), "Invalid scenarios")
-    scenarios = []
+    require(isinstance(results, list) and len(results) == len(CAPTURE_STAGE_COUNTS), "Invalid scenarios")
+    cases_by_tag = {
+        case["evidence_id"]: case
+        for feature in catalogue
+        for case in feature["scenarios"]
+        if case["evidence_id"] is not None
+    }
+    evidence = {}
     used = {"report.json"}
-    for index, (scenario, maximum) in enumerate(zip(results, STEP_COUNTS, strict=True), 1):
+    for index, scenario in enumerate(results, 1):
+        tag = scenario["evidence_id"]
+        require(tag in CAPTURE_STAGE_COUNTS and tag in cases_by_tag, "Unknown UI capture tag")
+        case = cases_by_tag[tag]
+        require(case["id"] not in evidence, f"Duplicate UI capture tag: {tag}")
+        require(scenario["name"] == case["name"], f"UI capture title differs from Gherkin: {tag}")
+        maximum = CAPTURE_STAGE_COUNTS[tag]
         steps = scenario["steps"]
         require(isinstance(steps, list) and 0 < len(steps) <= maximum, "Invalid steps")
         rendered = []
+        captured_spec = []
         failed = False
         for position, step in enumerate(steps, 1):
+            require(not failed, "Unexpected UI stage after a failure")
             checks = step["checks"]
             require(isinstance(checks, list) and 0 < len(checks) <= 6, "Invalid checks")
             rows = []
@@ -70,6 +93,7 @@ def read_report(archive, destination):
             )
             specification = step.get("spec", [])
             require(isinstance(specification, list) and len(specification) <= 12, "Invalid specification")
+            captured_spec.extend((item["keyword"], item["text"]) for item in specification)
             spec = (
                 "<dl class='specification'>" + "".join(
                     f"<div><dt>{text(item['keyword'])}</dt><dd>{text(item['text'])}</dd></div>"
@@ -91,42 +115,105 @@ def read_report(archive, destination):
                 f"<th scope='col'>結果</th></tr></thead><tbody>{''.join(rows)}</tbody></table></div>",
             )
         require(failed or len(steps) == maximum, "Incomplete passing scenario")
-        scenarios.append((text(scenario["name"]), failed, rendered))
+        require(all(not step["argument"] for step in case["steps"]), f"UI capture has unbound step arguments: {tag}")
+        authored_spec = [(step["keyword"], step["text"]) for step in case["steps"]]
+        require(
+            authored_spec[:len(captured_spec)] == captured_spec
+            and (failed or authored_spec == captured_spec),
+            f"UI capture steps differ from Gherkin: {tag}",
+        )
+        evidence[case["id"]] = Evidence(failed, rendered)
     require(used == files.keys(), "Unexpected screenshot")
-    return scenarios
+    return evidence
 
 
-def render(scenarios, pr, sha, run):
-    scenarios = sorted(enumerate(scenarios, 1), key=lambda scenario: not scenario[1][1])
-    links = []
+def timeline(items, label, prefix):
+    cards = [
+        f"<li class='step' id='{prefix}-{position}'>"
+        f"<span class='step-number' aria-hidden='true'>{position}</span>{content}</li>"
+        for position, content in enumerate(items, 1)
+    ]
+    return f"<ol class='steps' aria-label='{label}'>{''.join(cards)}</ol>"
+
+
+def render_spec(step):
+    background = "<span class='background'>背景</span>" if step["background"] else ""
+    keyword = html.escape(step["keyword"])
+    content = html.escape(step["text"])
+    markup = f"<h4 class='gherkin-step'>{background}<span>{keyword}</span> {content}</h4>"
+    argument = step["argument"]
+    if not argument:
+        return markup
+    if argument["kind"] == "doc_string":
+        media_type = argument["media_type"]
+        caption = f"<p class='argument-type'>{html.escape(media_type)}</p>" if media_type else ""
+        return markup + f"{caption}<pre>{html.escape(argument['content'])}</pre>"
+    rows = [
+        "<tr>" + "".join(f"<td>{html.escape(cell)}</td>" for cell in row) + "</tr>"
+        for row in argument["rows"]
+    ]
+    return markup + f"<div class='checks'><table aria-label='ステップのデータ'><tbody>{''.join(rows)}</tbody></table></div>"
+
+
+def render(catalogue, evidence, pr, sha, run):
+    groups = []
     panels = []
-    for index, (name, failed, steps) in scenarios:
-        scenario_id = f"scenario-{index}"
-        status = "失敗" if failed else "成功"
-        state = "fail" if failed else "pass"
-        links.append(
-            f"<a href='#{scenario_id}'><span>{name}</span>"
-            f"<small class='{state}'>{status} · {len(steps)} ステップ</small></a>"
-        )
-        cards = []
-        for position, content in enumerate(steps, 1):
-            step_id = f"{scenario_id}-step-{position}"
-            cards.append(
-                f"<li class='step' id='{step_id}'>"
-                f"<span class='step-number' aria-hidden='true'>{position}</span>{content}</li>"
+    failures = []
+    verified = []
+    total = 0
+    for feature in catalogue:
+        feature_name = html.escape(feature["name"])
+        links = []
+        for case in feature["scenarios"]:
+            total += 1
+            scenario_id = f"scenario-{case['id']}"
+            name = html.escape(case["name"])
+            source = f"{html.escape(feature['uri'])}:{case['line']}"
+            rule = case["rule"]
+            feature_context = f"{feature_name} / {html.escape(rule)}" if rule else feature_name
+            description = case["description"]
+            description_note = f"<p class='description'>{html.escape(description)}</p>" if description else ""
+            captures = evidence.get(case["id"])
+            status, state = ("計画中", "neutral") if case["planned"] else ("画面の実行結果なし", "neutral")
+            results = ""
+            if captures:
+                status, state = ("失敗", "fail") if captures.failed else ("成功", "pass")
+                (failures if captures.failed else verified).append(scenario_id)
+                results = (
+                    "<h3 class='flow-title'>画面検査の操作と結果</h3>"
+                    + timeline(captures.stages, "画面検査の操作と結果", f"{scenario_id}-stage")
+                )
+            example = case["example"]
+            example_note = ""
+            if example:
+                values = "、".join(f"{key} = {value}" for key, value in example["values"])
+                example_note = f"<p class='source'>例 {example['line']}行目 · {html.escape(values)}</p>"
+            links.append(
+                f"<a href='#{scenario_id}'><span>{name}</span>"
+                f"<small class='{state}'>{status} · {len(case['steps'])} ステップ"
+                + (f" · 例 {example['line']}行目" if example else "") + "</small></a>"
             )
-        panels.append(
-            f"<section id='{scenario_id}' aria-labelledby='{scenario_id}-title'>"
-            f"<h2 id='{scenario_id}-title'>{name}</h2>"
-            f"<ol class='steps' aria-label='操作と結果'>{"".join(cards)}</ol></section>"
+            panels.append(
+                f"<section id='{scenario_id}' aria-labelledby='{scenario_id}-title'>"
+                f"<p class='feature-path'>{feature_context}</p>"
+                f"<h2 id='{scenario_id}-title' tabindex='-1'>{name}</h2>"
+                f"<p class='scenario-meta'><strong class='{state}'>{status}</strong> <code>{source}</code></p>"
+                f"{description_note}{example_note}<h3 class='flow-title'>Gherkinの手順</h3>"
+                + timeline((render_spec(step) for step in case["steps"]), "Gherkinの手順", f"{scenario_id}-step")
+                + results + "</section>"
+            )
+        groups.append(
+            f"<div class='feature-group'><h3>{feature_name}</h3>{''.join(links)}</div>"
         )
+    preferred = (failures + verified + [""])[0]
+    summary = f"{total} シナリオ · 画面検査の結果 {len(evidence)} 件"
     return f"""<!doctype html>
 <html lang="ja">
 <head>
 <meta charset="utf-8">
 <meta name="robots" content="noindex, nofollow, noarchive">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Undo / Redo の画面検査 · PR #{pr}</title>
+<title>BDDレポート · PR #{pr}</title>
 <style>
 * {{ box-sizing: border-box }}
 :root {{
@@ -148,6 +235,7 @@ h1, h2, h3 {{ line-height: 1.4; text-wrap: pretty }}
 .topbar h1 {{ font-size: clamp(1.2rem, 3vw, 1.65rem) }}
 .topbar p {{ color: #c5d4ee; font-size: .87rem }}
 .topbar a {{ color: #d8e9ff }}
+.topbar .report-summary {{ margin-top: .2rem }}
 .layout {{
   margin: auto; max-width: 76rem;
   padding: clamp(1rem, 4vw, 3rem) clamp(1rem, 4vw, 3rem) 3rem max(3.15rem, 4vw);
@@ -166,15 +254,16 @@ h1, h2, h3 {{ line-height: 1.4; text-wrap: pretty }}
   outline: 3px solid var(--accent); outline-offset: 3px;
 }}
 .scenario-drawer {{
-  position: fixed; inset: 0 auto 0 0; margin: 0; padding: 1.1rem;
+  position: fixed; inset: 0 auto 0 0; margin: 0; padding: 0;
   width: min(22rem, calc(100vw - 2rem)); max-width: none; max-height: none;
   height: 100dvh; border: 0; border-right: 1px solid var(--line);
   background: #fff; color: inherit; box-shadow: 12px 0 36px #17254040;
-  overflow: auto; overscroll-behavior: contain;
+  overflow: hidden;
   transform: translateX(-100%);
   transition: transform .24s ease-out, display .24s allow-discrete, overlay .24s allow-discrete;
 }}
 .scenario-drawer[open] {{ transform: translateX(0) }}
+.drawer-content {{ height: 100%; display: flex; flex-direction: column }}
 .scenario-drawer::backdrop {{ background: #17254055 }}
 body:has(.scenario-drawer[open]) {{ overflow: hidden }}
 @starting-style {{
@@ -183,13 +272,22 @@ body:has(.scenario-drawer[open]) {{ overflow: hidden }}
 @media (prefers-reduced-motion: reduce) {{
   .scenario-drawer {{ transition: none }}
 }}
+.drawer-toolbar {{ padding: 1.1rem; border-bottom: 1px solid var(--line) }}
 .drawer-header {{
-  display: flex; align-items: center; justify-content: space-between; gap: .75rem; margin-bottom: .9rem;
+  display: flex; align-items: center; justify-content: space-between; gap: .75rem;
 }}
 .drawer-header h2 {{ font-size: 1.2rem }}
 .drawer-close {{
   flex: none; padding: .32rem .65rem; border-radius: .4rem; background: #f4f6fa; color: inherit;
 }}
+.drawer-search {{
+  width: 100%; margin-top: .65rem; padding: .5rem .65rem; font: inherit;
+  border: 1px solid var(--line); border-radius: .4rem; color: inherit; background: #fff;
+}}
+.drawer-search:focus-visible {{ outline: 2px solid var(--accent); outline-offset: 1px }}
+.scenarios {{ flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: .8rem 1.1rem 1.1rem }}
+.feature-group + .feature-group {{ margin-top: 1.25rem }}
+.feature-group h3 {{ font-size: .85rem; color: var(--muted); margin: .15rem 0 .5rem }}
 .scenarios a {{
   display: block; padding: .85rem .95rem; margin-bottom: .5rem; border: 1px solid var(--line);
   border-radius: .6rem; background: #fff; color: inherit; text-decoration: none;
@@ -199,12 +297,18 @@ body:has(.scenario-drawer[open]) {{ overflow: hidden }}
 .scenarios a span {{ display: block; font-weight: 650 }}
 .scenarios small {{ font-size: .81rem }}
 .pass {{ color: #167246 }} .fail {{ color: #a52830; font-weight: 650 }}
+.neutral, .source, .feature-path, .scenario-meta code {{ color: var(--muted) }}
 main, main section {{ min-width: 0 }}
 main section {{ scroll-margin-top: 1rem }}
 main h2 {{ font-size: clamp(1.35rem, 3vw, 2rem) }}
+.feature-path {{ margin-bottom: .25rem; font-size: .9rem }}
+.scenario-meta, .source {{ margin-top: .4rem; font-size: .86rem; overflow-wrap: anywhere }}
+.scenario-meta code {{ margin-inline-start: .35rem }}
+.description {{ margin-top: .75rem; white-space: pre-wrap; overflow-wrap: anywhere }}
+.flow-title {{ margin: 1.65rem 0 .8rem; font-size: 1.13rem }}
 .steps {{
   position: relative; padding: 0 0 0 3rem; list-style: none;
-  display: grid; gap: 1.5rem; margin: 1.5rem 0 0;
+  display: grid; gap: 1rem; margin: 0;
 }}
 .steps::before {{
   content: ""; position: absolute; inset: 0 auto 0 .9rem; width: 2px; background: var(--line);
@@ -219,6 +323,12 @@ main h2 {{ font-size: clamp(1.35rem, 3vw, 2rem) }}
   background: #e7f0ff; color: var(--accent); font-weight: 750;
 }}
 .action h3 {{ font-size: clamp(1.08rem, 2.2vw, 1.4rem) }}
+.gherkin-step {{ font-weight: 550; overflow-wrap: anywhere }}
+.gherkin-step span {{ color: var(--accent); margin-inline-end: .3em; font-weight: 700 }}
+.gherkin-step .background {{ color: var(--muted); font-size: .78rem; margin-inline-end: .7em }}
+.argument-type {{ font-size: .82rem; color: var(--muted); margin-top: .5rem }}
+.step pre {{ margin-bottom: 0; padding: .75rem; border-radius: .35rem; background: #f4f6fa; overflow-x: auto }}
+.step .gherkin-step + .checks {{ margin-top: .5rem }}
 .specification {{ margin: .55rem 0 0; padding: .25rem .65rem; border-left: 2px solid var(--accent) }}
 .specification div {{ display: flex; flex-wrap: wrap; gap: 0 .5rem }}
 .specification dt {{ color: var(--accent); font-weight: 650 }}
@@ -244,15 +354,23 @@ tbody tr:last-child th, tbody tr:last-child td {{ border-bottom: 0 }}
 </style>
 </head>
 <body>
-<header class="topbar"><div class="topbar-inner"><h1>Undo / Redo の画面検査</h1><p>
+<header class="topbar"><div class="topbar-inner"><div><h1>BDDレポート</h1><p class="report-summary">{summary}</p></div><p>
 <a href="https://github.com/keru-labo/meditor/pull/{pr}">PR #{pr}</a> · <code>{sha[:12]}</code> ·
 <a href="https://github.com/keru-labo/meditor/actions/runs/{run}">CIの実行結果</a></p></div></header>
 <button class="menu-trigger" type="button" aria-controls="scenario-drawer" aria-expanded="false" aria-haspopup="dialog" hidden>シナリオ</button>
 <dialog class="scenario-drawer" id="scenario-drawer" aria-labelledby="scenarios-title">
-  <div class="drawer-header"><h2 id="scenarios-title">シナリオ</h2><button class="drawer-close" type="button" autofocus>閉じる</button></div>
-  <nav class="scenarios" aria-labelledby="scenarios-title">{"".join(links)}</nav>
+  <div class="drawer-content">
+    <div class="drawer-toolbar">
+      <div class="drawer-header"><h2 id="scenarios-title">シナリオ</h2><button class="drawer-close" type="button" autofocus>閉じる</button></div>
+      <input class="drawer-search" type="search" aria-label="シナリオを検索" placeholder="機能名・シナリオ名で検索">
+    </div>
+    <nav class="scenarios" aria-labelledby="scenarios-title">
+      {"".join(groups)}
+      <p class="no-matches" role="status" hidden>該当するシナリオがありません。</p>
+    </nav>
+  </div>
 </dialog>
-<main class="layout">{"".join(panels)}</main>
+<main class="layout" data-preferred="{preferred}">{"".join(panels)}</main>
 <script>
 const trigger = document.querySelector('.menu-trigger');
 const drawer = document.getElementById('scenario-drawer');
@@ -261,8 +379,15 @@ trigger.hidden = false;
 trigger.addEventListener('click', () => {{
   drawer.showModal();
   trigger.setAttribute('aria-expanded', 'true');
+  drawer.querySelector('[aria-current]:not([hidden])')?.scrollIntoView({{block: 'nearest'}});
 }});
 drawer.querySelector('.drawer-close').addEventListener('click', () => drawer.close());
+drawer.addEventListener('keydown', event => {{
+  if (event.key === 'Escape') {{
+    event.preventDefault();
+    drawer.close();
+  }}
+}});
 drawer.addEventListener('click', event => {{
   if (event.target !== drawer) return;
   const bounds = drawer.getBoundingClientRect();
@@ -271,19 +396,44 @@ drawer.addEventListener('click', event => {{
 }});
 drawer.addEventListener('close', () => {{
   trigger.setAttribute('aria-expanded', 'false');
-  trigger.focus({{preventScroll: true}});
+  if (!document.activeElement.closest('main')) trigger.focus({{preventScroll: true}});
 }});
-for (const link of links) link.addEventListener('click', () => drawer.close());
-const sections = [...document.querySelectorAll('main section')];
+for (const link of links) link.addEventListener('click', event => {{
+  if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+  event.preventDefault();
+  const target = document.getElementById(link.hash.slice(1));
+  drawer.close();
+  if (location.hash !== link.hash) location.hash = link.hash;
+  selectScenario();
+  target.querySelector('h2').focus({{preventScroll: true}});
+}});
+const groups = [...drawer.querySelectorAll('.feature-group')];
+const search = drawer.querySelector('.drawer-search');
+search.addEventListener('input', () => {{
+  const query = search.value.trim().normalize('NFKC').toLowerCase();
+  for (const group of groups) {{
+    const feature = group.querySelector('h3').textContent;
+    const cases = [...group.querySelectorAll('a')];
+    for (const link of cases) {{
+      const haystack = (feature + ' ' + link.textContent).normalize('NFKC').toLowerCase();
+      link.hidden = !haystack.includes(query);
+    }}
+    group.hidden = cases.every(link => link.hidden);
+  }}
+  drawer.querySelector('.no-matches').hidden = groups.some(group => !group.hidden);
+}});
+const main = document.querySelector('main');
+const sections = [...main.children];
 function selectScenario() {{
   const target = document.getElementById(location.hash.slice(1));
-  const current = target?.closest('main section') ?? sections[0];
+  const active = target?.closest('main > section');
+  const current = active ?? document.getElementById(main.dataset.preferred) ?? sections[0];
   for (const link of links) {{
     if (link.hash === '#' + current.id) link.setAttribute('aria-current', 'location');
     else link.removeAttribute('aria-current');
   }}
   for (const section of sections) section.hidden = section !== current;
-  if (target) requestAnimationFrame(() => target.scrollIntoView({{block: 'start'}}));
+  if (active) requestAnimationFrame(() => target.scrollIntoView({{block: 'start'}}));
   else if (!location.hash) window.scrollTo(0, 0);
 }}
 addEventListener('hashchange', selectScenario);
@@ -296,17 +446,23 @@ selectScenario();
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("zip", type=Path)
+    parser.add_argument("gherkin_zip", type=Path)
     parser.add_argument("output", type=Path)
+    parser.add_argument("--evidence", type=Path)
     parser.add_argument("--pr", type=int, required=True)
     parser.add_argument("--sha", required=True)
     parser.add_argument("--run", type=int, required=True)
     args = parser.parse_args()
     require(args.pr > 0 and args.run > 0 and re.fullmatch(r"[0-9a-f]{40}", args.sha), "Invalid CI metadata")
     args.output.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(args.zip) as archive:
-        scenarios = read_report(archive, args.output)
-    (args.output / "index.html").write_text(render(scenarios, args.pr, args.sha, args.run), encoding="utf-8")
+    with zipfile.ZipFile(args.gherkin_zip) as archive:
+        catalogue = read_catalog(archive)
+    evidence = {}
+    if args.evidence:
+        with zipfile.ZipFile(args.evidence) as archive:
+            evidence = read_report(archive, args.output, catalogue)
+    markup = render(catalogue, evidence, args.pr, args.sha, args.run)
+    (args.output / "index.html").write_text(markup, encoding="utf-8")
 
 
 if __name__ == "__main__":
