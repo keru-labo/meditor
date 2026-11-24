@@ -1,38 +1,16 @@
 use anyhow::Result;
 use meditor_playback::{
     history::{Edit, EditHistory, EditTarget},
-    project::{Caption, ClipRange, Project, SECOND},
+    project::{ClipRange, Project, SECOND},
     subtitle_style::SubtitleStyle,
 };
 use serde_json::{Value, json};
 use std::fs;
 
-const DURATION: i64 = 60 * SECOND;
-const TRIM: ClipRange = ClipRange {
-    source_start_us: 9 * SECOND,
-    source_end_us: 34 * SECOND,
-};
+#[path = "support/history.rs"]
+mod fixture;
 
-fn project() -> Result<Project> {
-    let mut project = Project::new("recording.mp4".into(), Vec::new())?;
-    project.captions.push(Caption {
-        id: "opening".into(),
-        start_us: SECOND,
-        end_us: 2 * SECOND,
-        speaker: "A".into(),
-        text: "開始".into(),
-    });
-    Ok(project)
-}
-
-fn caption(text: &str) -> Edit {
-    Edit::Caption {
-        row: 0,
-        id: "opening".into(),
-        speaker: "B".into(),
-        text: text.into(),
-    }
-}
+use fixture::{DURATION, TRIM, caption, project};
 
 #[test]
 fn subtitle_style_is_persistent_and_reversible_with_existing_edits() -> Result<()> {
@@ -732,4 +710,118 @@ proptest::proptest! {
             );
         }
     }
+}
+
+#[test]
+fn short_operation_sequences_match_an_independent_snapshot_model() -> Result<()> {
+    #[derive(Clone, Copy, Debug)]
+    enum Operation {
+        EditCaption,
+        EditClip,
+        Undo,
+        Redo,
+        Reopen,
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    struct Snapshot {
+        text: &'static str,
+        clip: Option<ClipRange>,
+    }
+
+    const OPERATIONS: [Operation; 5] = [
+        Operation::EditCaption,
+        Operation::EditClip,
+        Operation::Undo,
+        Operation::Redo,
+        Operation::Reopen,
+    ];
+    const LENGTH: usize = 5;
+
+    let folder = tempfile::tempdir()?;
+    let path = folder.path().join("project.json");
+    for mut index in 0..OPERATIONS.len().pow(LENGTH as u32) {
+        let sequence: [Operation; LENGTH] = std::array::from_fn(|_| {
+            let operation = OPERATIONS[index % OPERATIONS.len()];
+            index /= OPERATIONS.len();
+            operation
+        });
+        let mut project = project()?;
+        let mut history = EditHistory::default();
+        let mut snapshots = vec![Snapshot {
+            text: "開始",
+            clip: None,
+        }];
+        let mut cursor = 0;
+
+        for (step, operation) in sequence.iter().enumerate() {
+            let mut next = snapshots[cursor];
+            let (changed, expected_change) = match operation {
+                Operation::EditCaption | Operation::EditClip => {
+                    let edit = match operation {
+                        Operation::EditCaption => {
+                            next.text = "ボス戦";
+                            caption(next.text)
+                        }
+                        Operation::EditClip => {
+                            next.clip = Some(TRIM);
+                            Edit::Clip(next.clip)
+                        }
+                        _ => unreachable!(),
+                    };
+                    let expected_change = next != snapshots[cursor];
+                    if expected_change {
+                        snapshots.truncate(cursor + 1);
+                        snapshots.push(next);
+                        cursor += 1;
+                    }
+                    (
+                        history.apply(&mut project, DURATION, edit)?.is_some(),
+                        expected_change,
+                    )
+                }
+                Operation::Undo => {
+                    let expected_change = cursor > 0;
+                    cursor = cursor.saturating_sub(1);
+                    (
+                        history.undo(&mut project, DURATION)?.is_some(),
+                        expected_change,
+                    )
+                }
+                Operation::Redo => {
+                    let expected_change = cursor + 1 < snapshots.len();
+                    cursor += usize::from(expected_change);
+                    (
+                        history.redo(&mut project, DURATION)?.is_some(),
+                        expected_change,
+                    )
+                }
+                Operation::Reopen => {
+                    project.save_with_history(&path, &history)?;
+                    project = Project::load(&path)?;
+                    history = project.take_edit_history(DURATION)?;
+                    (false, false)
+                }
+            };
+            assert_eq!(
+                (
+                    changed,
+                    project.captions[0].text.as_str(),
+                    project.clip,
+                    history.can_undo(),
+                    history.can_redo(),
+                ),
+                (
+                    expected_change,
+                    snapshots[cursor].text,
+                    snapshots[cursor].clip,
+                    cursor > 0,
+                    cursor + 1 < snapshots.len(),
+                ),
+                "sequence {:?}",
+                &sequence[..=step],
+            );
+        }
+    }
+    Ok(())
 }
