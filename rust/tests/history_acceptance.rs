@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use meditor_playback::{
     history::{Edit, EditHistory, EditTarget},
     project::{ClipRange, Project, SECOND},
@@ -555,21 +555,44 @@ fn trace_clip(value: i32) -> Result<Option<ClipRange>> {
 
 #[test]
 fn replay_quint_edit_history_trace() -> Result<()> {
-    replay_history_trace(include_str!(
-        "../../verification/quint/traces/edit_history.itf.json"
-    ))
+    replay_history_trace(
+        include_str!("../../verification/quint/traces/edit_history.itf.json"),
+        None,
+    )
 }
 
 #[test]
 fn replay_quint_full_edit_history_trace() -> Result<()> {
-    replay_history_trace(include_str!(
-        "../../verification/quint/traces/edit_history_full.itf.json"
-    ))
+    replay_history_trace(
+        include_str!("../../verification/quint/traces/edit_history_full.itf.json"),
+        None,
+    )
 }
 
-fn replay_history_trace(json: &str) -> Result<()> {
+#[test]
+fn replay_quint_reopened_edit_history_trace() -> Result<()> {
+    replay_history_trace(
+        include_str!("../../verification/quint/traces/edit_history_reopen.itf.json"),
+        Some(&[
+            "init", "caption", "clip", "undo", "save", "caption", "reopen", "redo", "undo", "undo",
+        ]),
+    )
+}
+
+fn replay_history_trace(json: &str, expected_commands: Option<&[&str]>) -> Result<()> {
     let trace: HistoryTrace = serde_json::from_str(json)?;
     assert!(trace.states.len() > 1);
+    assert_eq!(trace.states[0].state.command.kind, "init");
+    if let Some(expected) = expected_commands {
+        let commands: Vec<_> = trace
+            .states
+            .iter()
+            .map(|step| step.state.command.kind.as_str())
+            .collect();
+        assert_eq!(commands, expected);
+    }
+    let folder = tempfile::tempdir()?;
+    let path = folder.path().join("project.json");
     let mut project = project()?;
     let mut history = EditHistory::default();
     for (index, step) in trace.states.into_iter().enumerate() {
@@ -595,6 +618,19 @@ fn replay_history_trace(json: &str) -> Result<()> {
             "clip" => history.apply(&mut project, DURATION, Edit::Clip(trace_clip(value)?)),
             "undo" => history.undo(&mut project, DURATION),
             "redo" => history.redo(&mut project, DURATION),
+            "save" => {
+                project
+                    .save_with_history(&path, &history)
+                    .with_context(|| message.clone())?;
+                Ok(None)
+            }
+            "reopen" => {
+                project = Project::load(&path).with_context(|| message.clone())?;
+                history = project
+                    .take_edit_history(DURATION)
+                    .with_context(|| message.clone())?;
+                Ok(None)
+            }
             _ => anyhow::bail!("unknown operation at {message}"),
         };
         let result = match &actual {

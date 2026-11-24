@@ -4,6 +4,7 @@
 import json
 import re
 import sys
+from collections import Counter
 from functools import cache
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
@@ -17,8 +18,18 @@ from markdown_it import MarkdownIt
 
 ROOT = Path(__file__).resolve().parent.parent
 FEATURES = ROOT / "docs/features"
+VERIFICATION_MAP = FEATURES / "verification-map.md"
+QUINT_MODELS = ROOT / "verification/quint"
 MARKDOWN = MarkdownIt("commonmark")
+MARKDOWN_TABLE = MarkdownIt("commonmark").enable("table")
 PLACEHOLDER = re.compile(r"<[^\s<>]+>")
+SCENARIO_ROW = re.compile(r"^\| \[(.+?)\]\(([^()]+\.feature)#L(\d+)\) \|")
+MODEL_SCENARIO = re.compile(
+    r"^[ \t]*// BDD: ([^:\s]+\.feature):(\d+)(?: \[([\d, ]+)\])?[ \t]*\n"
+    r"[ \t]*run (\w+)\s*=",
+    re.MULTILINE,
+)
+MODEL_LINK = re.compile(r"\]\(\.\./\.\./verification/quint/([^()#]+\.qnt)(?:#L\d+)?\)")
 
 
 @cache
@@ -81,6 +92,8 @@ def scenario_nodes(children):
 def check_features(paths):
     errors = []
     count = 0
+    expected_rows = set()
+    expected_examples = {}
     indexed = {target for _, target, _, _ in local_links(FEATURES / "README.md")}
     for path in paths:
         relative = path.relative_to(ROOT).as_posix()
@@ -101,6 +114,13 @@ def check_features(paths):
         feature = document.get("feature", {})
         outlines = Dialect.for_name(feature.get("language", "en")).scenario_outline_keywords
         for scenario in scenario_nodes(feature.get("children", [])):
+            source = (path.relative_to(FEATURES).as_posix(), scenario["location"]["line"])
+            expected_rows.add((scenario["name"], *source))
+            expected_examples[source] = {
+                row["location"]["line"]
+                for examples in scenario["examples"]
+                for row in examples.get("tableBody", [])
+            }
             if not scenario["steps"]:
                 errors.append(f"{relative}: scenario has no steps: {scenario['name']}")
             outline_without_examples = scenario["keyword"] in outlines and not scenario["examples"]
@@ -110,15 +130,88 @@ def check_features(paths):
             if PLACEHOLDER.search(json.dumps(case, ensure_ascii=False)):
                 errors.append(f"{relative}: unresolved Examples placeholder: {case['name']}")
         count += len(scenarios)
-    return errors, count
+    return errors, count, expected_rows, expected_examples
+
+
+def check_verification_map(expected_rows):
+    location = VERIFICATION_MAP.relative_to(ROOT)
+    if not VERIFICATION_MAP.is_file():
+        return [f"{location}: missing verification map"]
+    text = VERIFICATION_MAP.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    rows = Counter()
+    for token in MARKDOWN_TABLE.parse(text):
+        if token.type == "tr_open" and token.map:
+            match = SCENARIO_ROW.match(lines[token.map[0]])
+            if match:
+                name, path, line = match.groups()
+                rows[name, path, int(line)] += 1
+    errors = []
+    for name, path, line in sorted(expected_rows - rows.keys()):
+        errors.append(f"{location}: missing scenario row for {path}:{line} {name!r}")
+    for (name, path, line), count in sorted(rows.items()):
+        if (name, path, line) not in expected_rows:
+            errors.append(f"{location}: unknown scenario row for {path}:{line} {name!r}")
+        if count > 1:
+            errors.append(f"{location}: duplicate scenario row for {path}:{line} {name!r}")
+    return errors
+
+
+def check_model_scenarios(expected_examples):
+    models = {}
+    covered_examples = {}
+    errors = []
+    for spec in sorted(QUINT_MODELS.glob("*.qnt")):
+        for feature, line, rows, run in MODEL_SCENARIO.findall(spec.read_text(encoding="utf-8")):
+            scenario = (feature, int(line))
+            if scenario not in expected_examples:
+                errors.append(f"{spec.relative_to(ROOT)}: {run} references unknown BDD scenario {feature}:{line}")
+                continue
+            models.setdefault(scenario, set()).add(spec.name)
+            for example in (int(row) for row in rows.split(",") if row.strip()):
+                if example not in expected_examples[scenario]:
+                    errors.append(f"{spec.relative_to(ROOT)}: {run} references unknown example {feature}:{example}")
+                covered_examples.setdefault(scenario, set()).add(example)
+    for scenario, examples in sorted(expected_examples.items()):
+        feature, line = scenario
+        if scenario not in models:
+            errors.append(f"{feature}:{line}: missing a Quint scenario run")
+        for example in sorted(examples - covered_examples.get(scenario, set())):
+            errors.append(f"{feature}:{example}: missing a Quint example run for scenario at line {line}")
+
+    if VERIFICATION_MAP.is_file():
+        text = VERIFICATION_MAP.read_text(encoding="utf-8")
+        lines = text.splitlines()
+        tokens = MARKDOWN_TABLE.parse(text)
+        for index, token in enumerate(tokens):
+            if token.type != "tr_open" or not token.map:
+                continue
+            row = lines[token.map[0]]
+            match = SCENARIO_ROW.match(row)
+            if not match:
+                continue
+            _, feature, line = match.groups()
+            candidates = models.get((feature, int(line)), set())
+            cells = []
+            for cell in tokens[index + 1 :]:
+                if cell.type == "tr_close":
+                    break
+                if cell.type == "inline":
+                    cells.append(cell.content)
+            links = MODEL_LINK.findall(cells[2]) if len(cells) > 2 else []
+            if candidates and not candidates.intersection(links):
+                errors.append(f"{feature}:{line}: verification map must link the corresponding Quint scenario")
+    return errors
 
 
 def main():
     pages = [ROOT / "README.md", *sorted((ROOT / "docs").rglob("*.md"))]
     paths = sorted(FEATURES.rglob("*.feature"))
     errors = check_markdown(pages)
-    feature_errors, count = check_features(paths)
+    feature_errors, count, expected_rows, expected_examples = check_features(paths)
     errors.extend(feature_errors)
+    errors.extend(check_verification_map(expected_rows))
+    errors.extend(check_model_scenarios(expected_examples))
     for error in errors:
         print(error, file=sys.stderr)
     if errors:

@@ -5,6 +5,8 @@ module EditHistory {
   type State = {
     before: Timeline,
     after: Timeline,
+    savedBefore: List[Timeline],
+    saved: List[Timeline],
     command: Command,
     result: str,
   }
@@ -18,18 +20,25 @@ module EditHistory {
   action init = state' = {
     before: initial,
     after: initial,
+    savedBefore: [],
+    saved: [],
     command: { kind: "init", value: 0 },
     result: "unchanged",
   }
 
   pure def current(timeline) = timeline.snapshots[timeline.cursor]
 
-  action record(kind, value, after, result) = state' = {
+  action recordWithSave(kind, value, after, result, saved) = state' = {
     before: state.after,
     after: after,
+    savedBefore: state.saved,
+    saved: saved,
     command: { kind: kind, value: value },
     result: result,
   }
+
+  action record(kind, value, after, result) =
+    recordWithSave(kind, value, after, result, state.saved)
 
   action edit(kind, value, snapshot) = {
     val timeline = state.after
@@ -73,6 +82,33 @@ module EditHistory {
     move("redo", 1),
   }
 
+  // One save slot for a complete archive within the persistence limits.
+  action save = recordWithSave("save", 0, state.after, "unchanged", [state.after])
+
+  action reopen = all {
+    state.saved.length() == 1,
+    record("reopen", 0, state.saved[0], "unchanged"),
+  }
+
+  action persistentStep = any { step, save, reopen }
+
+  // The unsaved caption edit discards Redo. Reopening must recover it from disk.
+  action checkpointStep = {
+    val kind = state.command.kind
+    any {
+      all { kind == "init", caption(1) },
+      all { kind == "caption", state.command.value == 1, clip(1) },
+      all { kind == "clip", move("undo", -1) },
+      all { kind == "undo", state.saved.length() == 0, save },
+      all { kind == "save", caption(0) },
+      all { kind == "caption", state.command.value == 0, reopen },
+      all { kind == "reopen", move("redo", 1) },
+      all { kind == "redo", move("undo", -1) },
+      all { kind == "undo", state.saved.length() == 1, state.after.cursor == 1,
+        move("undo", -1) },
+    }
+  }
+
   val historyRules = {
     val before = state.before
     val after = state.after
@@ -90,6 +126,17 @@ module EditHistory {
       after.cursor >= 0,
       after.cursor < after.snapshots.length(),
       after.snapshots.length() <= maxSnapshots,
+      state.saved.length() <= 1,
+      (kind == "save") implies all {
+        after == before,
+        state.saved == [before],
+        state.result == "unchanged",
+      },
+      (kind != "save") implies state.saved == state.savedBefore,
+      (kind == "reopen") implies all {
+        state.savedBefore == [after],
+        state.result == "unchanged",
+      },
       invalid implies (after == before and state.result == "error"),
       (isEdit and sameValue) implies (after == before and state.result == "unchanged"),
       (isEdit and not(invalid or sameValue)) implies all {
@@ -114,4 +161,14 @@ module EditHistory {
         implies (after == before and state.result == "unchanged"),
     }
   }
+
+  run saveReopenRedoTest = init.then(caption(1)).then(clip(1)).then(move("undo", -1))
+    .then(save).then(reopen)
+    .expect(current(state.after) == { caption: 1, clip: 0 }
+      and state.after.cursor == 1 and state.after.snapshots.length() == 3)
+    .then(move("redo", 1))
+    .expect(current(state.after) == { caption: 1, clip: 1 }
+      and state.after.cursor == 2)
+    .then(move("undo", -1)).then(move("undo", -1))
+    .expect(current(state.after) == { caption: 0, clip: 0 } and state.after.cursor == 0)
 }
