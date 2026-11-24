@@ -489,3 +489,215 @@ fn saves_only_the_contiguous_recent_suffix() -> Result<()> {
     assert!(!restored.can_undo());
     Ok(())
 }
+
+#[derive(serde::Deserialize)]
+struct ItfInt {
+    #[serde(rename = "#bigint")]
+    decimal: String,
+}
+
+impl ItfInt {
+    fn value(&self) -> Result<i32> {
+        Ok(self.decimal.parse()?)
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct HistoryTrace {
+    states: Vec<HistoryTraceStep>,
+}
+
+#[derive(serde::Deserialize)]
+struct HistoryTraceStep {
+    state: HistoryTraceState,
+}
+
+#[derive(serde::Deserialize)]
+struct HistoryTraceState {
+    command: HistoryTraceCommand,
+    result: String,
+    after: HistoryTraceTimeline,
+}
+
+#[derive(serde::Deserialize)]
+struct HistoryTraceCommand {
+    kind: String,
+    value: ItfInt,
+}
+
+#[derive(serde::Deserialize)]
+struct HistoryTraceTimeline {
+    cursor: ItfInt,
+    snapshots: Vec<HistoryTraceSnapshot>,
+}
+
+#[derive(serde::Deserialize)]
+struct HistoryTraceSnapshot {
+    caption: ItfInt,
+    clip: ItfInt,
+}
+
+fn trace_caption(value: i32) -> Result<(&'static str, &'static str)> {
+    match value {
+        0 => Ok(("A", "開始")),
+        1 => Ok(("B", "ボス戦")),
+        _ => anyhow::bail!("unknown model caption {value}"),
+    }
+}
+
+fn trace_clip(value: i32) -> Result<Option<ClipRange>> {
+    match value {
+        0 => Ok(None),
+        1 => Ok(Some(TRIM)),
+        -1 => Ok(Some(ClipRange {
+            source_start_us: DURATION,
+            source_end_us: DURATION,
+        })),
+        _ => anyhow::bail!("unknown model clip {value}"),
+    }
+}
+
+#[test]
+fn replay_quint_edit_history_trace() -> Result<()> {
+    let trace: HistoryTrace = serde_json::from_str(include_str!(
+        "../../verification/quint/traces/edit_history.itf.json"
+    ))?;
+    assert!(trace.states.len() > 1);
+    let mut project = project()?;
+    let mut history = EditHistory::default();
+    for (index, step) in trace.states.into_iter().enumerate() {
+        let state = step.state;
+        let value = state.command.value.value()?;
+        let action = state.command.kind.as_str();
+        let message = format!("ITF state {index} after {action}({value})");
+        let actual = match action {
+            "init" if index == 0 => Ok(None),
+            "caption" => {
+                let (speaker, text) = trace_caption(value)?;
+                history.apply(
+                    &mut project,
+                    DURATION,
+                    Edit::Caption {
+                        row: 0,
+                        id: "opening".into(),
+                        speaker: speaker.into(),
+                        text: text.into(),
+                    },
+                )
+            }
+            "clip" => history.apply(&mut project, DURATION, Edit::Clip(trace_clip(value)?)),
+            "undo" => history.undo(&mut project, DURATION),
+            "redo" => history.redo(&mut project, DURATION),
+            _ => anyhow::bail!("unknown operation at {message}"),
+        };
+        let result = match actual {
+            Ok(Some(_)) => "changed",
+            Ok(None) => "unchanged",
+            Err(_) => "error",
+        };
+        assert_eq!(result, state.result, "{message}");
+        let cursor = usize::try_from(state.after.cursor.value()?)?;
+        let snapshot = &state.after.snapshots[cursor];
+        let (speaker, text) = trace_caption(snapshot.caption.value()?)?;
+        assert_eq!(project.captions[0].speaker, speaker, "{message}");
+        assert_eq!(project.captions[0].text, text, "{message}");
+        assert_eq!(
+            project.clip,
+            trace_clip(snapshot.clip.value()?)?,
+            "{message}"
+        );
+        assert_eq!(history.can_undo(), cursor > 0, "{message}");
+        assert_eq!(
+            history.can_redo(),
+            cursor + 1 < state.after.snapshots.len(),
+            "{message}"
+        );
+    }
+    Ok(())
+}
+
+#[derive(Clone, Debug)]
+enum HistoryOperation {
+    Caption(String),
+    Clip(Option<ClipRange>),
+    Undo,
+    Redo,
+}
+
+impl HistoryOperation {
+    fn apply(
+        &self,
+        project: &mut Project,
+        history: &mut EditHistory,
+    ) -> Result<Option<EditTarget>> {
+        match self {
+            Self::Caption(text) => history.apply(project, DURATION, caption(text)),
+            Self::Clip(range) => history.apply(project, DURATION, Edit::Clip(*range)),
+            Self::Undo => history.undo(project, DURATION),
+            Self::Redo => history.redo(project, DURATION),
+        }
+    }
+}
+
+fn history_operation() -> impl proptest::strategy::Strategy<Value = HistoryOperation> {
+    use proptest::prelude::*;
+    prop_oneof![
+        "(?s:.{0,24})".prop_map(HistoryOperation::Caption),
+        Just(HistoryOperation::Clip(None)),
+        Just(HistoryOperation::Clip(Some(TRIM))),
+        Just(HistoryOperation::Undo),
+        Just(HistoryOperation::Redo),
+    ]
+}
+
+fn observe_history<'a>(
+    project: &'a Project,
+    history: &EditHistory,
+) -> (&'a str, &'a str, Option<ClipRange>, bool, bool) {
+    (
+        &project.captions[0].speaker,
+        &project.captions[0].text,
+        project.clip,
+        history.can_undo(),
+        history.can_redo(),
+    )
+}
+
+proptest::proptest! {
+    #[test]
+    fn generated_history_behaves_the_same_after_reopening(
+        prefix in proptest::collection::vec(history_operation(), 1..24),
+        suffix in proptest::collection::vec(history_operation(), 1..24),
+    ) {
+        use proptest::{prop_assert_eq, test_runner::TestCaseError};
+
+        let test_error = |error: anyhow::Error| TestCaseError::fail(format!("{error:#}"));
+
+        let mut original = project().map_err(test_error)?;
+        let mut history = EditHistory::default();
+        for operation in prefix {
+            operation.apply(&mut original, &mut history).map_err(test_error)?;
+        }
+        let folder = tempfile::tempdir()?;
+        let path = folder.path().join("project.json");
+        original.save_with_history(&path, &history).map_err(test_error)?;
+        let mut reopened = Project::load(&path).map_err(test_error)?;
+        let mut restored = reopened.take_edit_history(DURATION).map_err(test_error)?;
+        prop_assert_eq!(observe_history(&original, &history), observe_history(&reopened, &restored));
+
+        // Drain the same commands after reopening, then exhaust undo and redo.
+        // Either stack can contain at most one entry per generated operation.
+        for operation in suffix.into_iter()
+            .chain(std::iter::repeat_n(HistoryOperation::Undo, 48))
+            .chain(std::iter::repeat_n(HistoryOperation::Redo, 48))
+        {
+            let expected = operation.apply(&mut original, &mut history).map_err(test_error)?;
+            let actual = operation.apply(&mut reopened, &mut restored).map_err(test_error)?;
+            prop_assert_eq!(actual.is_some(), expected.is_some(), "after {:?}", operation);
+            prop_assert_eq!(
+                observe_history(&original, &history), observe_history(&reopened, &restored),
+                "after {:?}", operation
+            );
+        }
+    }
+}
