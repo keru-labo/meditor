@@ -98,6 +98,11 @@ impl ChatSelection {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use meditor_playback::{
+        history::{Edit, EditHistory, EditTarget},
+        project::Project,
+    };
+    use serde::Deserialize;
 
     fn range(start: i64, end: i64) -> ClipRange {
         ClipRange {
@@ -165,5 +170,143 @@ mod tests {
             }],
             &draft
         ));
+    }
+
+    #[test]
+    fn replay_quint_cancelled_reply_after_caption_edit() -> Result<()> {
+        #[derive(Deserialize)]
+        struct Tag {
+            tag: String,
+        }
+
+        #[derive(Deserialize)]
+        struct EditState {
+            caption: bool,
+            clip: Tag,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct State {
+            last_action: String,
+            request: Tag,
+            reply: Tag,
+            edit: EditState,
+        }
+
+        #[derive(Deserialize)]
+        struct Step {
+            state: State,
+        }
+
+        #[derive(Deserialize)]
+        struct Trace {
+            states: Vec<Step>,
+        }
+
+        let trace: Trace = serde_json::from_str(include_str!(
+            "../../verification/quint/traces/chat_edit_cancelled.itf.json"
+        ))?;
+        let commands: Vec<_> = trace
+            .states
+            .iter()
+            .map(|step| step.state.last_action.as_str())
+            .collect();
+        assert_eq!(
+            commands,
+            ["init", "submit", "cancel", "editCaption", "arrive", "poll"]
+        );
+
+        let mut chat = ChatSelection::default();
+        let mut project = Project::new("video.mp4".into(), vec![])?;
+        project.captions.push(Caption {
+            id: "1".into(),
+            start_us: 20,
+            end_us: 30,
+            speaker: String::new(),
+            text: "元の字幕".into(),
+        });
+        let mut history = EditHistory::default();
+        let mut reply = None;
+        for (index, Step { state }) in trace.states.into_iter().enumerate() {
+            let action = state.last_action.as_str();
+            match action {
+                "init" => (),
+                "submit" => {
+                    // Control the worker's completion order while exercising the real receiver.
+                    let (send, result) = mpsc::sync_channel(1);
+                    chat.0 = Some(PendingSelection {
+                        result,
+                        cancelled: Arc::new(AtomicBool::new(false)),
+                    });
+                    reply = Some((
+                        send,
+                        SelectionInput {
+                            bounds: range(0, 40),
+                            captions: project.captions.clone(),
+                            clip_draft: ["0".into(), "40".into()],
+                        },
+                    ));
+                }
+                "cancel" => assert!(chat.invalidate()),
+                "editCaption" => {
+                    assert!(matches!(
+                        history.apply(
+                            &mut project,
+                            40,
+                            Edit::Caption {
+                                row: 0,
+                                id: "1".into(),
+                                speaker: String::new(),
+                                text: "変更した字幕".into(),
+                            }
+                        )?,
+                        Some(EditTarget::Caption(0))
+                    ));
+                }
+                "arrive" => {
+                    assert_eq!(state.reply.tag, "SelectedClip", "ITF worker response");
+                    let (send, input) = reply.take().expect("pending model reply");
+                    assert!(
+                        send.send(SelectionResult {
+                            input,
+                            selection: Ok(Some(ClipSelection {
+                                range: range(20, 30),
+                                export: None
+                            })),
+                        })
+                        .is_ok()
+                    );
+                }
+                "poll" => assert!(chat.poll()?.is_none(), "cancelled response was returned"),
+                _ => anyhow::bail!("unknown model command {action}"),
+            }
+            let request = match &chat.0 {
+                None => "Idle",
+                Some(pending) if pending.cancelled.load(Ordering::Relaxed) => "Cancelled",
+                Some(_) => "Pending",
+            };
+            assert_eq!(
+                request, state.request.tag,
+                "ITF state {index} after {action}"
+            );
+            let expected_caption = if state.edit.caption {
+                "変更した字幕"
+            } else {
+                "元の字幕"
+            };
+            assert_eq!(
+                project.captions[0].text, expected_caption,
+                "ITF state {index} after {action}"
+            );
+            assert_eq!(state.edit.clip.tag, "NoClip");
+            assert_eq!(project.clip, None, "ITF state {index} after {action}");
+        }
+        assert!(matches!(
+            history.undo(&mut project, 40)?,
+            Some(EditTarget::Caption(0))
+        ));
+        assert!(!history.can_undo());
+        Ok(())
     }
 }

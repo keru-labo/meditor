@@ -5,9 +5,7 @@ on:
     paths:
       - '.github/workflows/formal-quint.yml'
       - 'verification/quint/**'
-      - 'docs/features/chat-editing.*'
-      - 'docs/features/ai-clip-editing.*'
-      - 'docs/features/edit-history.*'
+      - 'docs/features/**'
       - 'rust/src/chat.rs'
       - 'rust/src/main.rs'
       - 'rust/src/history.rs'
@@ -18,9 +16,7 @@ on:
     paths:
       - '.github/workflows/formal-quint.yml'
       - 'verification/quint/**'
-      - 'docs/features/chat-editing.*'
-      - 'docs/features/ai-clip-editing.*'
-      - 'docs/features/edit-history.*'
+      - 'docs/features/**'
       - 'rust/src/chat.rs'
       - 'rust/src/main.rs'
       - 'rust/src/history.rs'
@@ -35,7 +31,7 @@ jobs:
   chat-edit:
     name: Check the chat edit model
     runs-on: ubuntu-24.04
-    timeout-minutes: 8
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: verification/quint

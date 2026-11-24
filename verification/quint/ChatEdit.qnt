@@ -11,6 +11,7 @@ module ChatEdit {
     clipHistory: ClipHistory,
   }
   type State = {
+    lastAction: str,
     request: Request,
     reply: Reply,
     draft: str,
@@ -31,6 +32,7 @@ module ChatEdit {
   }
 
   action init = state' = {
+    lastAction: "init",
     request: Idle,
     reply: Waiting,
     draft: "original",
@@ -43,27 +45,28 @@ module ChatEdit {
   action submit = all {
     state.request == Idle,
     state.edit.clip == NoClip,
-    state' = { ...state, request: Pending, submittedDraft: state.draft },
+    state' = { ...state, lastAction: "submit", request: Pending, submittedDraft: state.draft },
   }
 
   action cancel = all {
     state.request == Pending,
-    state' = { ...state, request: Cancelled },
+    state' = { ...state, lastAction: "cancel", request: Cancelled },
   }
 
   // These committed changes invalidate the request even if the input later changes back.
-  action changeEdit(edit) = state' = {
+  action changeEdit(kind, edit) = state' = {
     ...state,
+    lastAction: kind,
     request: if (state.request == Pending) Invalidated else state.request,
     edit: edit,
     mustPreserveEdits: false,
   }
 
-  action editCaption = changeEdit({ ...state.edit, caption: not(state.edit.caption) })
+  action editCaption = changeEdit("editCaption", { ...state.edit, caption: not(state.edit.caption) })
 
-  action replaceSource = changeEdit({ ...initialEdit, source: not(state.edit.source) })
+  action replaceSource = changeEdit("replaceSource", { ...initialEdit, source: not(state.edit.source) })
 
-  action replaceTranscript = changeEdit({
+  action replaceTranscript = changeEdit("replaceTranscript", {
     ...state.edit,
     transcript: not(state.edit.transcript),
     caption: false,
@@ -72,15 +75,15 @@ module ChatEdit {
 
   action addManualClip = all {
     state.edit.clip == NoClip,
-    changeEdit({ ...state.edit, clip: ManualClip, clipHistory: ManualClipHistory }),
+    changeEdit("addManualClip", { ...state.edit, clip: ManualClip, clipHistory: ManualClipHistory }),
   }
 
-  action editDraft(draft) = state' = { ...state, draft: draft }
+  action editDraft(draft) = state' = { ...state, lastAction: "editDraft", draft: draft }
 
   action arrive(reply) = all {
     state.request != Idle,
     state.reply == Waiting,
-    state' = { ...state, reply: reply },
+    state' = { ...state, lastAction: "arrive", reply: reply },
   }
 
   val canApply =
@@ -90,6 +93,7 @@ module ChatEdit {
     state.reply != Waiting,
     state' = {
       ...state,
+      lastAction: "poll",
       request: Idle,
       reply: Waiting,
       beforePoll: state.edit,
@@ -113,6 +117,14 @@ module ChatEdit {
     arrive(SelectedWholeSource),
     arrive(Failed),
     poll,
+  }
+
+  action cancelledReplyTraceStep = any {
+    all { state.lastAction == "init", submit },
+    all { state.lastAction == "submit", cancel },
+    all { state.lastAction == "cancel", editCaption },
+    all { state.lastAction == "editCaption", arrive(SelectedClip) },
+    all { state.lastAction == "arrive", poll },
   }
 
   val pollPreservesEditsWhenRequired = state.mustPreserveEdits implies state.edit == state.beforePoll

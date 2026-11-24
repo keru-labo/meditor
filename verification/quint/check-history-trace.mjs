@@ -1,9 +1,9 @@
-import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { reproduceFixture } from "./trace-fixture.mjs";
 
 const require = createRequire(import.meta.url);
 const quint = require.resolve("@informalsystems/quint/dist/src/cli.js");
@@ -32,19 +32,7 @@ try {
   ]);
 
   for (const [source, name] of fixtures) {
-    const fixture = new URL("./traces/" + name, import.meta.url);
-    const trace = JSON.parse(readFileSync(join(dir, source), "utf8"));
-    delete trace["#meta"].description;
-    delete trace["#meta"].timestamp;
-    if (process.argv.includes("--write")) {
-      const { states, ...header } = trace;
-      const lines = states.map(state => "    " + JSON.stringify(state));
-      writeFileSync(fixture, JSON.stringify(header, null, 2).slice(0, -2) +
-        ',\n  "states": [\n' + lines.join(",\n") + "\n  ]\n}\n");
-    } else {
-      assert.deepEqual(trace, JSON.parse(readFileSync(fixture, "utf8")),
-        `${name} differs. Regenerate with npm run check:history-trace -- --write.`);
-    }
+    reproduceFixture(join(dir, source), name, "npm run check:history-trace");
   }
 } finally {
   rmSync(dir, { recursive: true, force: true });
