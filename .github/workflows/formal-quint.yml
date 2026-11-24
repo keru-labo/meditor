@@ -11,6 +11,7 @@ on:
       - 'rust/src/chat.rs'
       - 'rust/src/main.rs'
       - 'rust/src/history.rs'
+      - 'rust/src/project.rs'
       - 'rust/tests/history_acceptance.rs'
   push:
     branches: [main]
@@ -23,6 +24,7 @@ on:
       - 'rust/src/chat.rs'
       - 'rust/src/main.rs'
       - 'rust/src/history.rs'
+      - 'rust/src/project.rs'
       - 'rust/tests/history_acceptance.rs'
   workflow_dispatch:
 

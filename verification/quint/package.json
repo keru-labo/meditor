@@ -2,7 +2,7 @@
   "name": "meditor-quint-verification",
   "private": true,
   "scripts": {
-    "check": "quint test ChatEdit.qnt --backend=typescript && quint verify ChatEdit.qnt --backend=tlc --invariant=pollPreservesEditsWhenRequired && quint verify EditHistory.qnt --backend=tlc --invariant=historyRules && npm run check:history-trace",
+    "check": "quint test ChatEdit.qnt --backend=typescript && quint verify ChatEdit.qnt --backend=tlc --invariant=pollPreservesEditsWhenRequired && quint test EditHistory.qnt --backend=typescript && quint verify EditHistory.qnt --backend=tlc --step=persistentStep --invariant=historyRules && npm run check:history-trace",
     "check:history-trace": "node check-history-trace.mjs"
   },
   "devDependencies": {

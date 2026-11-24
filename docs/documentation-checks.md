@@ -9,6 +9,6 @@ python tools/check-docs.py
 
 - ルートの README と `docs/` の Markdown から、リポジトリ内のリンク先と Markdown の見出しアンカーを確認する。外部 URL は検査の対象外。
 - `docs/features/` の Gherkin を構文解析し、シナリオアウトラインの例を展開する。空のシナリオや、展開されずに残った置換変数を検出する。
-- 各 `.feature` と対応する機能定義を、[機能一覧](features/README.md) から参照できることを確認する。
+- 各 `.feature` と対応する機能定義を、[機能一覧](features/README.md) から参照できることを確認する。 [検証の対応表](features/verification-map.md) では、各シナリオの名前と行リンクが Gherkin の定義と一致し、1行ずつ載っていることを確認する。
 
 Gherkin のステップを使う受入テストは、各機能の実装と合わせて検証する。仕様の意味、条件の抜け、利用者に見える結果はレビューで確認する。 [プレビュー版の受入条件](acceptance.md)

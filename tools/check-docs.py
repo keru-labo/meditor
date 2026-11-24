@@ -4,6 +4,7 @@
 import json
 import re
 import sys
+from collections import Counter
 from functools import cache
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
@@ -17,8 +18,11 @@ from markdown_it import MarkdownIt
 
 ROOT = Path(__file__).resolve().parent.parent
 FEATURES = ROOT / "docs/features"
+VERIFICATION_MAP = FEATURES / "verification-map.md"
 MARKDOWN = MarkdownIt("commonmark")
+MARKDOWN_TABLE = MarkdownIt("commonmark").enable("table")
 PLACEHOLDER = re.compile(r"<[^\s<>]+>")
+SCENARIO_ROW = re.compile(r"^\| \[(.+?)\]\(([^()]+\.feature)#L(\d+)\) \|")
 
 
 @cache
@@ -81,6 +85,7 @@ def scenario_nodes(children):
 def check_features(paths):
     errors = []
     count = 0
+    expected_rows = set()
     indexed = {target for _, target, _, _ in local_links(FEATURES / "README.md")}
     for path in paths:
         relative = path.relative_to(ROOT).as_posix()
@@ -101,6 +106,9 @@ def check_features(paths):
         feature = document.get("feature", {})
         outlines = Dialect.for_name(feature.get("language", "en")).scenario_outline_keywords
         for scenario in scenario_nodes(feature.get("children", [])):
+            expected_rows.add(
+                (scenario["name"], path.relative_to(FEATURES).as_posix(), scenario["location"]["line"])
+            )
             if not scenario["steps"]:
                 errors.append(f"{relative}: scenario has no steps: {scenario['name']}")
             outline_without_examples = scenario["keyword"] in outlines and not scenario["examples"]
@@ -110,15 +118,40 @@ def check_features(paths):
             if PLACEHOLDER.search(json.dumps(case, ensure_ascii=False)):
                 errors.append(f"{relative}: unresolved Examples placeholder: {case['name']}")
         count += len(scenarios)
-    return errors, count
+    return errors, count, expected_rows
+
+
+def check_verification_map(expected_rows):
+    location = VERIFICATION_MAP.relative_to(ROOT)
+    if not VERIFICATION_MAP.is_file():
+        return [f"{location}: missing verification map"]
+    text = VERIFICATION_MAP.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    rows = Counter()
+    for token in MARKDOWN_TABLE.parse(text):
+        if token.type == "tr_open" and token.map:
+            match = SCENARIO_ROW.match(lines[token.map[0]])
+            if match:
+                name, path, line = match.groups()
+                rows[name, path, int(line)] += 1
+    errors = []
+    for name, path, line in sorted(expected_rows - rows.keys()):
+        errors.append(f"{location}: missing scenario row for {path}:{line} {name!r}")
+    for (name, path, line), count in sorted(rows.items()):
+        if (name, path, line) not in expected_rows:
+            errors.append(f"{location}: unknown scenario row for {path}:{line} {name!r}")
+        if count > 1:
+            errors.append(f"{location}: duplicate scenario row for {path}:{line} {name!r}")
+    return errors
 
 
 def main():
     pages = [ROOT / "README.md", *sorted((ROOT / "docs").rglob("*.md"))]
     paths = sorted(FEATURES.rglob("*.feature"))
     errors = check_markdown(pages)
-    feature_errors, count = check_features(paths)
+    feature_errors, count, expected_rows = check_features(paths)
     errors.extend(feature_errors)
+    errors.extend(check_verification_map(expected_rows))
     for error in errors:
         print(error, file=sys.stderr)
     if errors:
