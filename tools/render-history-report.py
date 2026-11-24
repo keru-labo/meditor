@@ -68,12 +68,20 @@ def read_report(archive, destination):
                 "<ol class='instructions'>" + "".join(f"<li>{text(item)}</li>" for item in operations) + "</ol>"
                 if operations else ""
             )
+            specification = step.get("spec", [])
+            require(isinstance(specification, list) and len(specification) <= 12, "Invalid specification")
+            spec = (
+                "<dl class='specification'>" + "".join(
+                    f"<div><dt>{text(item['keyword'])}</dt><dd>{text(item['text'])}</dd></div>"
+                    for item in specification
+                ) + "</dl>" if specification else ""
+            )
             step_passed = all(check["expected"] == check["actual"] for check in checks)
             rationale = text(step.get("rationale", "画面から取得した値を、操作後に期待する値と照合しています。"))
             verdict = "なぜ成功か" if step_passed else "何が期待と違うか"
             result = "すべての確認点が期待値と一致しました。" if step_passed else "期待値と一致しなかった確認点があります。"
             rendered.append(
-                f"<div class='action'><h3>{action}</h3>{instructions}</div>"
+                f"<div class='action'><h3>{action}</h3>{spec}{instructions}</div>"
                 "<figure><figcaption><span>操作直後の画面</span>"
                 f"<a href='{name}' target='_blank' rel='noopener'>原寸で開く ↗</a></figcaption>"
                 f"<img src='{name}' width='{width}' height='{height}' loading='lazy' alt='{action}直後のエディター画面'></figure>"
@@ -126,6 +134,7 @@ def render(scenarios, pr, sha, run):
   --line: #dbe3ee; --muted: #455572; --accent: #174ea5;
 }}
 [hidden] {{ display: none !important }}
+html {{ scrollbar-gutter: stable }}
 body {{ margin: 0 }}
 a {{ color: var(--accent) }}
 a:focus-visible {{ outline: 3px solid var(--accent); outline-offset: 3px }}
@@ -140,19 +149,47 @@ h1, h2, h3 {{ line-height: 1.4; text-wrap: pretty }}
 .topbar p {{ color: #c5d4ee; font-size: .87rem }}
 .topbar a {{ color: #d8e9ff }}
 .layout {{
-  display: grid; grid-template-columns: minmax(13rem, 18rem) minmax(0, 1fr); gap: clamp(1rem, 3vw, 2.5rem);
-  margin: auto; max-width: 94rem; padding: clamp(1rem, 4vw, 3rem);
+  margin: auto; max-width: 76rem;
+  padding: clamp(1rem, 4vw, 3rem) clamp(1rem, 4vw, 3rem) 3rem max(3.15rem, 4vw);
 }}
-.scenarios {{ align-self: start; position: sticky; top: 1.25rem }}
-.scenarios summary {{
-  cursor: pointer; padding: .7rem .85rem; border: 1px solid var(--line); border-radius: .6rem;
-  background: #fff; color: var(--muted); font-weight: 650;
+.menu-trigger, .drawer-close {{
+  font: inherit; cursor: pointer; border: 1px solid var(--line); font-weight: 650;
 }}
-.scenarios summary:focus-visible {{ outline: 3px solid var(--accent); outline-offset: 3px }}
-.scenarios details[open] summary {{ margin-bottom: .65rem }}
-.menu-state {{ margin-left: .35rem; font-size: .8rem; font-weight: 500 }}
-.menu-close, .scenarios details[open] .menu-open {{ display: none }}
-.scenarios details[open] .menu-close {{ display: inline }}
+.menu-trigger {{
+  position: fixed; z-index: 2; top: 42%; left: 0;
+  padding: .8rem .36rem; border-left: 0; border-radius: 0 .65rem .65rem 0;
+  writing-mode: vertical-rl; background: #172540; color: #fff;
+  box-shadow: 0 4px 16px #17254038;
+}}
+.menu-trigger:hover {{ background: #254673 }}
+.menu-trigger:focus-visible, .drawer-close:focus-visible {{
+  outline: 3px solid var(--accent); outline-offset: 3px;
+}}
+.scenario-drawer {{
+  position: fixed; inset: 0 auto 0 0; margin: 0; padding: 1.1rem;
+  width: min(22rem, calc(100vw - 2rem)); max-width: none; max-height: none;
+  height: 100dvh; border: 0; border-right: 1px solid var(--line);
+  background: #fff; color: inherit; box-shadow: 12px 0 36px #17254040;
+  overflow: auto; overscroll-behavior: contain;
+  transform: translateX(-100%);
+  transition: transform .24s ease-out, display .24s allow-discrete, overlay .24s allow-discrete;
+}}
+.scenario-drawer[open] {{ transform: translateX(0) }}
+.scenario-drawer::backdrop {{ background: #17254055 }}
+body:has(.scenario-drawer[open]) {{ overflow: hidden }}
+@starting-style {{
+  .scenario-drawer[open] {{ transform: translateX(-100%) }}
+}}
+@media (prefers-reduced-motion: reduce) {{
+  .scenario-drawer {{ transition: none }}
+}}
+.drawer-header {{
+  display: flex; align-items: center; justify-content: space-between; gap: .75rem; margin-bottom: .9rem;
+}}
+.drawer-header h2 {{ font-size: 1.2rem }}
+.drawer-close {{
+  flex: none; padding: .32rem .65rem; border-radius: .4rem; background: #f4f6fa; color: inherit;
+}}
 .scenarios a {{
   display: block; padding: .85rem .95rem; margin-bottom: .5rem; border: 1px solid var(--line);
   border-radius: .6rem; background: #fff; color: inherit; text-decoration: none;
@@ -182,6 +219,10 @@ main h2 {{ font-size: clamp(1.35rem, 3vw, 2rem) }}
   background: #e7f0ff; color: var(--accent); font-weight: 750;
 }}
 .action h3 {{ font-size: clamp(1.08rem, 2.2vw, 1.4rem) }}
+.specification {{ margin: .55rem 0 0; padding: .25rem .65rem; border-left: 2px solid var(--accent) }}
+.specification div {{ display: flex; flex-wrap: wrap; gap: 0 .5rem }}
+.specification dt {{ color: var(--accent); font-weight: 650 }}
+.specification dd {{ margin: 0; overflow-wrap: anywhere }}
 .instructions {{ color: var(--muted); padding-left: 1.15rem; margin: .45rem 0 0 }}
 figure {{ margin: 1rem 0; background: #edf1f7; border: 1px solid var(--line); border-radius: .6rem; overflow: hidden }}
 figcaption {{
@@ -197,12 +238,7 @@ table {{ width: 100%; border-collapse: collapse; text-align: left; font-size: .9
 th, td {{ padding: .4rem .6rem; border-bottom: 1px solid var(--line); overflow-wrap: anywhere }}
 thead {{ background: #f3f6fb }}
 tbody tr:last-child th, tbody tr:last-child td {{ border-bottom: 0 }}
-@media (min-width: 721px) {{
-  .layout:has(.scenarios details:not([open])) {{ grid-template-columns: 11rem minmax(0, 1fr) }}
-}}
 @media (max-width: 720px) {{
-  .layout {{ grid-template-columns: 1fr }}
-  .scenarios {{ position: static }}
   th, td {{ padding: .35rem }}
 }}
 </style>
@@ -211,14 +247,33 @@ tbody tr:last-child th, tbody tr:last-child td {{ border-bottom: 0 }}
 <header class="topbar"><div class="topbar-inner"><h1>Undo / Redo の画面検査</h1><p>
 <a href="https://github.com/keru-labo/meditor/pull/{pr}">PR #{pr}</a> · <code>{sha[:12]}</code> ·
 <a href="https://github.com/keru-labo/meditor/actions/runs/{run}">CIの実行結果</a></p></div></header>
-<div class="layout">
-<nav class="scenarios" aria-labelledby="scenarios-title"><details open>
-<summary><span id="scenarios-title">シナリオ</span><span class="menu-state menu-open" aria-hidden="true">展開</span><span class="menu-state menu-close" aria-hidden="true">閉じる</span></summary>
-{"".join(links)}</details></nav>
-<main>{"".join(panels)}</main>
-</div>
+<button class="menu-trigger" type="button" aria-controls="scenario-drawer" aria-expanded="false" aria-haspopup="dialog" hidden>シナリオ</button>
+<dialog class="scenario-drawer" id="scenario-drawer" aria-labelledby="scenarios-title">
+  <div class="drawer-header"><h2 id="scenarios-title">シナリオ</h2><button class="drawer-close" type="button" autofocus>閉じる</button></div>
+  <nav class="scenarios" aria-labelledby="scenarios-title">{"".join(links)}</nav>
+</dialog>
+<main class="layout">{"".join(panels)}</main>
 <script>
-const links = [...document.querySelectorAll('.scenarios a')];
+const trigger = document.querySelector('.menu-trigger');
+const drawer = document.getElementById('scenario-drawer');
+const links = [...drawer.querySelectorAll('.scenarios a')];
+trigger.hidden = false;
+trigger.addEventListener('click', () => {{
+  drawer.showModal();
+  trigger.setAttribute('aria-expanded', 'true');
+}});
+drawer.querySelector('.drawer-close').addEventListener('click', () => drawer.close());
+drawer.addEventListener('click', event => {{
+  if (event.target !== drawer) return;
+  const bounds = drawer.getBoundingClientRect();
+  if (event.clientX < bounds.left || event.clientX >= bounds.right ||
+      event.clientY < bounds.top || event.clientY >= bounds.bottom) drawer.close();
+}});
+drawer.addEventListener('close', () => {{
+  trigger.setAttribute('aria-expanded', 'false');
+  trigger.focus({{preventScroll: true}});
+}});
+for (const link of links) link.addEventListener('click', () => drawer.close());
 const sections = [...document.querySelectorAll('main section')];
 function selectScenario() {{
   const target = document.getElementById(location.hash.slice(1));

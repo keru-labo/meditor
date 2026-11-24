@@ -12,6 +12,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[path = "history_report_spec.rs"]
+mod spec;
+
 const CAPTION: &str = "ボス戦";
 const OPEN_SAMPLE: &str = "合成プロジェクトを開く";
 const ENTER_CLIP_RANGE: &str = "開始に「0」、終了に「9」を入力して「区間を適用」を押す";
@@ -21,11 +24,6 @@ const ORIGINAL_RANGE: &str = "0.000000 – 60.000000 秒";
 const EDITED_RANGE: &str = "0.000000 – 9.000000 秒";
 const ENABLED: &str = "有効";
 const DISABLED: &str = "無効";
-const SCENARIO_NAMES: [&str; 2] = [
-    "Undo の後の新しい編集で通常の Redo の候補を消す",
-    "保存後に開き直したプロジェクトで Undo と Redo を使う",
-];
-
 #[derive(Serialize)]
 struct Report {
     scenarios: Vec<Scenario>,
@@ -33,7 +31,7 @@ struct Report {
 
 #[derive(Serialize)]
 struct Scenario {
-    name: &'static str,
+    name: String,
     steps: Vec<Step>,
 }
 
@@ -44,6 +42,8 @@ struct Step {
     rationale: &'static str,
     checks: Vec<Check>,
     screenshot: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    spec: Vec<spec::SpecStep>,
 }
 
 #[derive(Serialize)]
@@ -220,6 +220,7 @@ fn perform(
         rationale,
         checks,
         screenshot: format!("{}-{}.png", scenario + 1, step + 1),
+        spec: Vec::new(),
     })
 }
 
@@ -232,13 +233,15 @@ pub(super) fn run(
     fs::create_dir_all(&output)?;
     let workspace = tempfile::tempdir()?;
     let destination = workspace.path().join("fixture.json");
+    let mut specs = spec::load()?;
     let mut report = Report {
-        scenarios: SCENARIO_NAMES
-            .map(|name| Scenario {
-                name,
+        scenarios: specs
+            .iter()
+            .map(|spec| Scenario {
+                name: spec.name.clone(),
                 steps: Vec::new(),
             })
-            .into(),
+            .collect(),
     };
     let mut scenario = 0;
     let mut step = 0;
@@ -272,7 +275,7 @@ pub(super) fn run(
                     let capture = pending.take().unwrap().0;
                     report.scenarios[scenario].steps.push(capture);
                     step += 1;
-                    if failed || step == [3, 4][scenario] {
+                    if failed || step == specs[scenario].stages.len() {
                         scenario += 1;
                         step = 0;
                     }
@@ -292,11 +295,11 @@ pub(super) fn run(
                     }
                     return Ok(false);
                 }
-                let capture = perform(&ui, &editor, &source, &destination, scenario, step)
+                let mut capture = perform(&ui, &editor, &source, &destination, scenario, step)
                     .unwrap_or_else(|error| {
                         eprintln!(
                             "{} の操作 {}: {error:#}",
-                            SCENARIO_NAMES[scenario],
+                            report.scenarios[scenario].name,
                             step + 1
                         );
                         Step {
@@ -305,8 +308,10 @@ pub(super) fn run(
                             rationale: "プロジェクトが開ければ、編集前の状態を画面で確認できる。",
                             checks: vec![check("プロジェクトの読み込み", "成功", "失敗")],
                             screenshot: format!("{}-{}.png", scenario + 1, step + 1),
+                            spec: Vec::new(),
                         }
                     });
+                capture.spec = std::mem::take(&mut specs[scenario].stages[step]);
                 pending = Some((capture, Instant::now() + Duration::from_millis(180)));
                 Ok(false)
             })();
