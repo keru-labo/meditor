@@ -13,3 +13,17 @@ GUI とチャットの両方から、同じ作業履歴に対して Undo / Redo 
 ツールバーの「元に戻す」「やり直す」は、開いているプロジェクトで変更した字幕本文・話者名とクリップの素材区間に対応する。対象の変更がないときはボタンが無効になる。字幕は入力欄で反映された変更ごと、素材区間は「区間を適用」ごとに記録される。
 
 保存すると、Undo と Redo の候補も現在の編集内容と一緒に保存され、開き直した後に使える。それぞれ新しい順に最大128件・512 KiB の範囲で、連続した候補を保持する。古いプロジェクトの履歴は空で始まる。履歴の字幕 ID や素材区間が現在のプロジェクトと整合しない場合は、編集内容を開いたうえで履歴を初期化し、メッセージを表示する。SRT 読込で字幕一覧を置き換えると履歴は初期化される。 [実装済み操作の受入テスト](../../rust/tests/history_acceptance.rs)
+
+## CI での検証
+
+Linux CI は [履歴のシナリオ](edit-history.feature) を展開し、実装済みのシナリオごとに Rust の編集・保存 API を実行する。未定義のステップや期待結果との不一致は CI を失敗させる。チャット経由の操作など、未実装のシナリオには `@planned` を付けて一覧に出す。予定シナリオの名前と例の件数は実行スクリプトで照合する。
+
+同じ CI で、一時コピーから Redo 候補を消す処理を除き、対応するシナリオが期待した検査で失敗することを確認する。Rust の受入テストでは、字幕編集、区間変更、Undo、Redo、保存と再読込の5種類から作った長さ5の全3,125操作列を、編集状態のスナップショットを使う参照モデルと照合する。
+
+ローカルでも、エディターをビルドできる環境から実行できる。
+
+```sh
+python3 -m venv /tmp/meditor-history-bdd
+/tmp/meditor-history-bdd/bin/python -m pip install --require-hashes --only-binary=:all: -r tools/docs-check-requirements.txt
+/tmp/meditor-history-bdd/bin/python tools/check-history-bdd.py --check-mutation
+```
