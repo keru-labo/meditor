@@ -36,7 +36,8 @@ jobs:
       - name: Install dependencies for build scripts
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential pkg-config libclang-dev libfontconfig-dev libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libsdl2-dev
+          # The runner provides the compiler and pkg-config. Bindgen only needs shared libclang.
+          sudo apt-get install -y --no-install-recommends libclang1-18 libfontconfig-dev libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libsdl2-dev
 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea # v4.39.4
