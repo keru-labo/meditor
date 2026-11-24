@@ -1,4 +1,6 @@
-# Quint による AI 編集結果の適用仕様
+# Quint によるエディターの仕様検証
+
+## AI 編集結果の適用
 
 チャットで依頼した単一クリップ編集をいつ反映できるかを検査する。応答の到着と GUI による取り込みを別のイベントとし、その前後のキャンセル、字幕や区間入力の変更、素材や文字起こしの差し替え、手動のクリップ追加を扱う。応答を破棄する場合や素材全体を選んだ場合は編集と履歴を保持し、区間が変わる有効な応答はクリップと履歴に反映する。 [切り出しの失敗・中断・前提変更の BDD](../../docs/features/ai-clip-editing.feature#L81) · [チャット編集の BDD](../../docs/features/chat-editing.feature) · [作業履歴の BDD](../../docs/features/edit-history.feature) · [Quint モデル](ChatEdit.qnt)
 
@@ -20,4 +22,34 @@ npm ci --ignore-scripts
 npm run check
 ```
 
-CI も同じ手順でモデルのシナリオテストと TLC による全探索を実行する。 [Quint の CI](../../.github/workflows/formal-quint.yml)
+CI も同じ手順でシナリオテスト、TLC による全探索、ITF フィクスチャの再生成チェックを実行する。 [Quint の CI](../../.github/workflows/formal-quint.yml)
+
+## 作業履歴の Undo / Redo
+
+モデルでは編集済みのスナップショットの列と現在位置で履歴を表す。Rust 実装は Undo と Redo の二つのスタックを使う。操作と結果を ITF に記録し、Rust の受入テストで実際に同じ操作を行って照合する。 [Quint モデル](EditHistory.qnt) · [Rust 実装](../../rust/src/history.rs) · [受入テスト](../../rust/tests/history_acceptance.rs)
+
+| 操作 | 条件 | 遷移と結果 |
+| --- | --- | --- |
+| 字幕・クリップ区間の編集 | 有効で値が変わる | 通常の Redo 候補を破棄し、新しい状態を追加する |
+| 字幕・クリップ区間の編集 | 同じ値 | 履歴も編集内容も保持し、変更なしを返す |
+| クリップ区間の編集 | 無効な区間 | 履歴も編集内容も保持し、エラーを返す |
+| Undo / Redo | 対応する候補がある | スナップショット列を保持し、現在位置を前後に一つ動かす |
+| Undo / Redo | 対応する候補がない | 履歴も編集内容も保持し、変更なしを返す |
+
+通常の Redo 候補を破棄する振る舞いを Quint と ITF で確認する。候補から外れた変更を作業履歴に表示するシナリオは BDD で計画中。 [通常の Redo に関する BDD](../../docs/features/edit-history.feature#L47) · [作業履歴の表示に関する BDD](../../docs/features/edit-history.feature#L53)
+
+TLC は字幕1件、字幕と区間それぞれ2種類の有効値、無効区間1種類、初期状態を含めて最大4スナップショットという有限モデルを全探索する。この上限を超える新規編集は探索範囲に含めない。ITF は2本を再生し、各ステップで編集内容、操作結果、Undo / Redo の可否を照合する。4スナップショットに達する編集や、変更した字幕を編集操作で初期値に戻すケースも含む。
+
+保存・再読込は Rust の BDD と Proptest で扱う。Proptest は同じ生成操作列から2つのプロジェクトを作り、片方を保存して開き直す。その後の操作と Undo / Redo が、保存せずに続けたもう片方と一致することを確認する。生成する履歴は製品の保存上限に収まる短さに絞る。 [保存・再読込の BDD](../../docs/features/edit-history.feature#L59)
+
+`verification/quint` でモデルを実行して ITF を更新する。
+
+```sh
+npm run check:history-trace -- --write
+```
+
+リポジトリルートで、通常の Rust ビルド環境から再生テストと Proptest を実行する。
+
+```sh
+cargo test --manifest-path rust/Cargo.toml --locked --test history_acceptance
+```
