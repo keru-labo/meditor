@@ -59,13 +59,13 @@ CI も同じ手順でシナリオテスト、TLC による全探索、ITF フィ
 | 保存 | 正常に保存できる | スナップショット列と現在位置を保存し、編集中の状態を保持する |
 | 再読込 | 保存済みのプロジェクトがある | 保存した列と現在位置を復元する。以後の再読込にも同じ保存内容を使う |
 
-通常の Redo 候補を破棄する振る舞いを Quint と ITF で確認する。候補から外れた変更を作業履歴に表示するシナリオは BDD で計画中。 [通常の Redo に関する BDD](../../docs/features/edit-history.feature#L47) · [作業履歴の表示に関する BDD](../../docs/features/edit-history.feature#L53)
+通常の Redo 候補を破棄する振る舞いを Quint と ITF で確認する。候補から外れた変更を作業履歴に表示するシナリオは BDD で計画中。 [通常の Redo に関する BDD](../../docs/features/edit-history.feature#L48) · [作業履歴の表示に関する BDD](../../docs/features/edit-history.feature#L55)
 
 TLC は字幕1件、字幕と区間それぞれ2種類の有効値、無効区間1種類、最大4スナップショット、保存先1つの有限モデルを全探索する。保存・再読込は正常に完了し、履歴が保存上限に収まる経路を扱う。履歴の切り詰めと不正なアーカイブは Rust の受入テストで確認する。ファイル操作そのものが失敗する経路はモデルの範囲外。
 
 Rust で ITF を3本再生し、編集内容、操作結果、Undo / Redo の可否を各ステップで照合する。保存のトレースでは、字幕と区間を編集して区間だけ Undo し、保存する。その後の字幕編集で Redo 候補を消してから開き直し、保存時の字幕と区間、Undo と Redo の可否、Redo で区間が戻り、続けて2回 Undo すると元の字幕と区間に戻ることを照合する。保存・再読込の操作結果は編集対象を返さないため、ITF では `unchanged` と表す。再読込後の編集内容と履歴は別途照合する。 [保存・再読込の ITF](traces/edit_history_reopen.itf.json)
 
-Rust の BDD と Proptest でも保存・再読込を確認する。Proptest は同じ生成操作列から2つのプロジェクトを作り、片方を保存して開き直す。その後の操作と Undo / Redo が、保存せずに続けたもう片方と一致することを確認する。 [保存・再読込の BDD](../../docs/features/edit-history.feature#L59)
+Rust の BDD と Proptest でも保存・再読込を確認する。Proptest は同じ生成操作列から2つのプロジェクトを作り、片方を保存して開き直す。その後の操作と Undo / Redo が、保存せずに続けたもう片方と一致することを確認する。 [保存・再読込の BDD](../../docs/features/edit-history.feature#L61)
 
 `verification/quint` でモデルを実行して ITF を更新する。
 

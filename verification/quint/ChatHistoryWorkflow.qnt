@@ -465,16 +465,16 @@ module ChatHistoryWorkflow {
 
   action undoCut = seedBoss.then(moveHistory(Gui, true))
 
-  // BDD: edit-history.feature:47
+  // BDD: edit-history.feature:48
   run clearRedoTest = init.then(undoCut).expect(canRedo).then(manualCaption(Highlight))
     .expect(view.correctedHighlight and not(canRedo))
 
-  // BDD: edit-history.feature:54
+  // BDD: edit-history.feature:55
   run retainDiscardedCutTest = init.then(undoCut).expect(canRedo).then(manualCaption(Highlight))
     .expect(not(canRedo) and listMap(state.session.audit, change => change.change) == [Cut, Caption]
       and state.session.audit[0].author == Ai)
 
-  // BDD: edit-history.feature:59
+  // BDD: edit-history.feature:61
   run reopenAndRedoTest = init.then(seedBoss).then(manualCaption(Boss))
     .then(submit(AdjustBoss)).then(reply(Normal))
     .expect(view.clips == [Boss] and view.bossCaptionText == "boss-battle" and view.bossRange == adjustedBossRange)
