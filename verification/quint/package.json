@@ -2,7 +2,7 @@
   "name": "meditor-quint-verification",
   "private": true,
   "scripts": {
-    "check": "quint test ChatEdit.qnt --backend=typescript && quint verify ChatEdit.qnt --backend=tlc --invariant=discardPreservesEdits"
+    "check": "quint test ChatEdit.qnt --backend=typescript && quint verify ChatEdit.qnt --backend=tlc --invariant=pollPreservesEditsWhenRequired"
   },
   "devDependencies": {
     "@informalsystems/quint": "0.32.0"
