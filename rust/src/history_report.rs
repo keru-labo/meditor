@@ -41,6 +41,7 @@ struct Scenario {
 struct Step {
     action: &'static str,
     operations: &'static [&'static str],
+    rationale: &'static str,
     checks: Vec<Check>,
     screenshot: String,
 }
@@ -106,13 +107,14 @@ fn perform(
     scenario: usize,
     step: usize,
 ) -> Result<Step> {
-    let (action, operations, checks): (_, &[_], _) = match (scenario, step) {
+    let (action, operations, rationale, checks): (_, &[_], _, _) = match (scenario, step) {
         (0, 0) => {
             open_project(ui, editor, source, destination)?;
             edit_clip(ui);
             (
                 "素材区間を0〜9秒に変更する",
                 &[OPEN_SAMPLE, ENTER_CLIP_RANGE],
+                "入力した 0〜9 秒が素材区間に反映されれば、続く Undo で取り消す変更が作成されている。",
                 vec![check("素材区間", EDITED_RANGE, clip(ui))],
             )
         }
@@ -121,6 +123,7 @@ fn perform(
             (
                 "区間変更を元に戻す",
                 &[UNDO],
+                "区間が元の 0〜60 秒に戻り、Redo が有効なら、取り消した区間変更をまだ再適用できる。",
                 vec![
                     check("素材区間", ORIGINAL_RANGE, clip(ui)),
                     check(
@@ -136,6 +139,7 @@ fn perform(
             (
                 "別の編集として字幕本文を変更する",
                 &[EDIT_FIRST_CAPTION],
+                "字幕に「ボス戦」が反映され、Redo が無効なら、新しい字幕編集を適用した時点で以前の区間変更の Redo 候補が消えている。",
                 vec![
                     check("字幕一覧の本文", CAPTION, caption(ui)),
                     check(
@@ -153,6 +157,7 @@ fn perform(
             (
                 "字幕と素材区間を順に変更する",
                 &[OPEN_SAMPLE, EDIT_FIRST_CAPTION, ENTER_CLIP_RANGE],
+                "字幕が「ボス戦」で区間が 0〜9 秒なら、字幕編集と区間変更の両方が反映されている。",
                 vec![
                     check("字幕一覧の本文", CAPTION, caption(ui)),
                     check("素材区間", EDITED_RANGE, clip(ui)),
@@ -165,6 +170,7 @@ fn perform(
             (
                 "区間変更だけを元に戻して保存する",
                 &[UNDO, "ツールバーの「保存」を押す"],
+                "区間だけが元の 0〜60 秒に戻り、保存完了が表示されれば、その状態で保存できた。",
                 vec![
                     check("素材区間", ORIGINAL_RANGE, clip(ui)),
                     check(
@@ -180,6 +186,7 @@ fn perform(
             (
                 "保存したプロジェクトを開き直す",
                 &["直前に保存した fixture.json を再度開く"],
+                "字幕が「ボス戦」のままで区間が 0〜60 秒に戻っており、Undo と Redo の両方が有効なら、編集内容と両方向の履歴を復元できている。",
                 vec![
                     check("字幕一覧の本文", CAPTION, caption(ui)),
                     check("素材区間", ORIGINAL_RANGE, clip(ui)),
@@ -201,6 +208,7 @@ fn perform(
             (
                 "区間変更をやり直す",
                 &["ツールバーの「やり直す」を押す"],
+                "区間が再び 0〜9 秒になれば、保存前に取り消した区間変更を開き直したあとに再適用できている。",
                 vec![check("素材区間", EDITED_RANGE, clip(ui))],
             )
         }
@@ -209,6 +217,7 @@ fn perform(
     Ok(Step {
         action,
         operations,
+        rationale,
         checks,
         screenshot: format!("{}-{}.png", scenario + 1, step + 1),
     })
@@ -293,6 +302,7 @@ pub(super) fn run(
                         Step {
                             action: "プロジェクトを開く",
                             operations: &["シナリオで使うプロジェクトを読み込む"],
+                            rationale: "プロジェクトが開ければ、編集前の状態を画面で確認できる。",
                             checks: vec![check("プロジェクトの読み込み", "成功", "失敗")],
                             screenshot: format!("{}-{}.png", scenario + 1, step + 1),
                         }

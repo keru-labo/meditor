@@ -68,16 +68,20 @@ def read_report(archive, destination):
                 "<ol class='instructions'>" + "".join(f"<li>{text(item)}</li>" for item in operations) + "</ol>"
                 if operations else ""
             )
-            rendered.append((
-                action,
+            step_passed = all(check["expected"] == check["actual"] for check in checks)
+            rationale = text(step.get("rationale", "画面から取得した値を、操作後に期待する値と照合しています。"))
+            verdict = "なぜ成功か" if step_passed else "何が期待と違うか"
+            result = "すべての確認点が期待値と一致しました。" if step_passed else "期待値と一致しなかった確認点があります。"
+            rendered.append(
                 f"<div class='action'><h3>{action}</h3>{instructions}</div>"
                 "<figure><figcaption><span>操作直後の画面</span>"
                 f"<a href='{name}' target='_blank' rel='noopener'>原寸で開く ↗</a></figcaption>"
                 f"<img src='{name}' width='{width}' height='{height}' loading='lazy' alt='{action}直後のエディター画面'></figure>"
-                "<div class='checks'><h4>確認結果</h4><table><thead><tr>"
+                f"<div class='checks'><h4 class='{'pass' if step_passed else 'fail'}'>{verdict}</h4>"
+                f"<p>{result} {rationale}</p><table><thead><tr>"
                 "<th scope='col'>確認点</th><th scope='col'>期待値</th><th scope='col'>実際の値</th>"
                 f"<th scope='col'>結果</th></tr></thead><tbody>{''.join(rows)}</tbody></table></div>",
-            ))
+            )
         require(failed or len(steps) == maximum, "Incomplete passing scenario")
         scenarios.append((text(scenario["name"]), failed, rendered))
     require(used == files.keys(), "Unexpected screenshot")
@@ -96,11 +100,9 @@ def render(scenarios, pr, sha, run):
             f"<a href='#{scenario_id}'><span>{name}</span>"
             f"<small class='{state}'>{status} · {len(steps)} ステップ</small></a>"
         )
-        timeline = []
         cards = []
-        for position, (action, content) in enumerate(steps, 1):
+        for position, content in enumerate(steps, 1):
             step_id = f"{scenario_id}-step-{position}"
-            timeline.append(f"<li><a href='#{step_id}'><span>{position}</span>{action}</a></li>")
             cards.append(
                 f"<li class='step' id='{step_id}'>"
                 f"<span class='step-number' aria-hidden='true'>{position}</span>{content}</li>"
@@ -108,7 +110,6 @@ def render(scenarios, pr, sha, run):
         panels.append(
             f"<section id='{scenario_id}' aria-labelledby='{scenario_id}-title'>"
             f"<h2 id='{scenario_id}-title'>{name}</h2>"
-            f"<ol class='timeline' aria-label='実行順'>{"".join(timeline)}</ol>"
             f"<ol class='steps' aria-label='操作と結果'>{"".join(cards)}</ol></section>"
         )
     return f"""<!doctype html>
@@ -156,22 +157,22 @@ h1, h2, h3 {{ line-height: 1.4; text-wrap: pretty }}
 main, main section {{ min-width: 0 }}
 main section {{ scroll-margin-top: 1rem }}
 main h2 {{ font-size: clamp(1.35rem, 3vw, 2rem) }}
-.timeline {{
-  display: flex; gap: .4rem 1rem; flex-wrap: wrap; padding: 0; margin: 1rem 0 1.6rem;
-  list-style: none; font-size: .9rem;
+.steps {{
+  position: relative; padding: 0 0 0 3rem; list-style: none;
+  display: grid; gap: 1.5rem; margin: 1.5rem 0 0;
 }}
-.timeline a {{ display: inline-flex; gap: .45rem; align-items: baseline; text-underline-offset: .2em }}
-.timeline a span {{ font-weight: 700; font-variant-numeric: tabular-nums }}
-.steps {{ padding: 0; list-style: none; display: grid; gap: 1.5rem; margin: 0 }}
+.steps::before {{
+  content: ""; position: absolute; inset: 0 auto 0 .9rem; width: 2px; background: var(--line);
+}}
 .step {{
   position: relative; padding: clamp(.85rem, 2vw, 1.5rem); scroll-margin-top: 1rem;
   border: 1px solid var(--line); border-radius: .85rem; background: #fff; min-width: 0;
 }}
 .step-number {{
-  position: absolute; display: grid; place-items: center; border-radius: .4rem; width: 1.95rem; height: 1.95rem;
+  position: absolute; left: -3.08rem; top: 1.1rem; display: grid; place-items: center;
+  border-radius: 50%; width: 1.95rem; height: 1.95rem;
   background: #e7f0ff; color: var(--accent); font-weight: 750;
 }}
-.action {{ padding-left: 2.65rem }}
 .action h3 {{ font-size: clamp(1.08rem, 2.2vw, 1.4rem) }}
 .instructions {{ color: var(--muted); padding-left: 1.15rem; margin: .45rem 0 0 }}
 figure {{ margin: 1rem 0; background: #edf1f7; border: 1px solid var(--line); border-radius: .6rem; overflow: hidden }}
@@ -182,7 +183,8 @@ figcaption {{
 figcaption a {{ font-weight: 500 }}
 img {{ display: block; width: 100%; height: auto; background: #172540 }}
 .checks {{ overflow-x: auto }}
-.checks h4 {{ font-size: .92rem; margin: .2rem 0 .35rem }}
+.checks h4 {{ font-size: 1rem; margin: .2rem 0 .35rem }}
+.checks p {{ margin-bottom: .7rem }}
 table {{ width: 100%; border-collapse: collapse; text-align: left; font-size: .9rem }}
 th, td {{ padding: .4rem .6rem; border-bottom: 1px solid var(--line); overflow-wrap: anywhere }}
 thead {{ background: #f3f6fb }}
@@ -190,7 +192,6 @@ tbody tr:last-child th, tbody tr:last-child td {{ border-bottom: 0 }}
 @media (max-width: 720px) {{
   .layout {{ grid-template-columns: 1fr }}
   .scenarios {{ position: static }}
-  .timeline {{ display: grid }}
   th, td {{ padding: .35rem }}
 }}
 </style>
@@ -225,54 +226,6 @@ selectScenario();
 """
 
 
-def render_review(results, pr, sha, run):
-    def cell(value):
-        return "".join(
-            f"&#{ord(character)};" if character in "<>&|\n\r\\`*_[]~!" else character
-            for character in value
-        )
-
-    scenarios = [
-        (not all(check["expected"] == check["actual"] for step in scenario["steps"]
-                 for check in step["checks"]), scenario)
-        for scenario in results
-    ]
-    lines = [
-        "# Undo / Redo の画面検査",
-        f"[PR #{pr}](https://github.com/keru-labo/meditor/pull/{pr}) · `{sha[:12]}` · "
-        f"[CIの実行結果](https://github.com/keru-labo/meditor/actions/runs/{run})",
-        "## シナリオ",
-        "",
-    ]
-    scenarios.sort(key=lambda scenario: not scenario[0])
-    for failed, scenario in scenarios:
-        status = "失敗" if failed else "成功"
-        lines.append(f"- {status} · {cell(scenario['name'])}")
-    for failed, scenario in scenarios:
-        status = "失敗" if failed else "成功"
-        lines.extend(["", f"## {status} · {cell(scenario['name'])}", ""])
-        for step in scenario["steps"]:
-            action = cell(step["action"])
-            lines.extend([f"### {action}", ""])
-            for index, operation in enumerate(step.get("operations", []), 1):
-                lines.append(f"{index}. {cell(operation)}")
-            if step.get("operations"):
-                lines.append("")
-            lines.extend([
-                f"![{action}直後のエディター画面]({step['screenshot']})", "",
-                "| 確認点 | 期待 | 実際 | 結果 |",
-                "| --- | --- | --- | --- |",
-            ])
-            for check in step["checks"]:
-                result = "成功" if check["expected"] == check["actual"] else "失敗"
-                lines.append(
-                    f"| {cell(check['name'])} | {cell(check['expected'])} | "
-                    f"{cell(check['actual'])} | {result} |"
-                )
-            lines.append("")
-    return "\n".join(lines)
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("zip", type=Path)
@@ -280,17 +233,11 @@ def main():
     parser.add_argument("--pr", type=int, required=True)
     parser.add_argument("--sha", required=True)
     parser.add_argument("--run", type=int, required=True)
-    parser.add_argument("--review-markdown", action="store_true")
     args = parser.parse_args()
     require(args.pr > 0 and args.run > 0 and re.fullmatch(r"[0-9a-f]{40}", args.sha), "Invalid CI metadata")
     args.output.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(args.zip) as archive:
         scenarios = read_report(archive, args.output)
-        if args.review_markdown:
-            results = json.loads(archive.read("report.json"))["scenarios"]
-            (args.output / "review.md").write_text(
-                render_review(results, args.pr, args.sha, args.run), encoding="utf-8"
-            )
     (args.output / "index.html").write_text(render(scenarios, args.pr, args.sha, args.run), encoding="utf-8")
 
 
