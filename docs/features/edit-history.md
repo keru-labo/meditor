@@ -16,14 +16,12 @@ GUI とチャットの両方から、同じ作業履歴に対して Undo / Redo 
 
 ## CI での検証
 
-Linux CI は [履歴のシナリオ](edit-history.feature) を展開し、実装済みのシナリオごとに Rust の編集・保存 API を実行する。未定義のステップや期待結果との不一致は CI を失敗させる。チャット経由の操作など、未実装のシナリオには `@planned` を付けて一覧に出す。予定シナリオの名前と例の件数は実行スクリプトで照合する。
+Rust の受入テストは [履歴のシナリオ](edit-history.feature) を展開し、実装済みのシナリオごとに Rust の編集・保存 API を実行する。未定義のステップや期待結果との不一致は CI を失敗させる。チャット経由の操作など、未実装のシナリオには `@planned` を付けて一覧に出す。予定シナリオの名前と例の件数は受入テストで照合する。
 
-同じ CI で、一時コピーから Redo 候補を消す処理を除き、対応するシナリオが期待した検査で失敗することを確認する。Rust の受入テストでは、字幕編集、区間変更、Undo、Redo、保存と再読込の5種類から作った長さ5の全3,125操作列を、編集状態のスナップショットを使う参照モデルと照合する。
+Linux CI では、一時コピーから Redo 候補を消す処理を除き、対応するシナリオが期待した検査で失敗することを確認する。Rust の受入テストでは、字幕編集、区間変更、Undo、Redo、保存と再読込の5種類から作った長さ5の全3,125操作列を、編集状態のスナップショットを使う参照モデルと照合する。
 
 ローカルでも、エディターをビルドできる環境から実行できる。
 
 ```sh
-python3 -m venv /tmp/meditor-history-bdd
-/tmp/meditor-history-bdd/bin/python -m pip install --require-hashes --only-binary=:all: -r tools/docs-check-requirements.txt
-/tmp/meditor-history-bdd/bin/python tools/check-history-bdd.py --check-mutation
+cargo test --manifest-path rust/Cargo.toml --locked --test history_bdd -- --nocapture
 ```

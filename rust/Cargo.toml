@@ -30,3 +30,6 @@ sdl2 = { version = "=0.39.0", features = ["bundled", "static-link"] }
 
 [target.'cfg(not(windows))'.dependencies]
 sdl2 = { version = "=0.39.0", features = ["use-pkgconfig"] }
+
+[dev-dependencies]
+gherkin = "=0.16.0"

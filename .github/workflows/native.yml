@@ -27,7 +27,7 @@ jobs:
       - name: Install test dependencies
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends ca-certificates curl git build-essential pkg-config libclang-dev libfontconfig-dev libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libsdl2-dev ffmpeg xvfb xauth libxkbcommon-x11-0 fonts-noto-cjk python3-venv
+          apt-get install -y --no-install-recommends ca-certificates curl git build-essential pkg-config libclang-dev libfontconfig-dev libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libsdl2-dev ffmpeg xvfb xauth libxkbcommon-x11-0 fonts-noto-cjk
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
         with:
@@ -49,11 +49,20 @@ jobs:
           for name in editor subtitle-style subtitle-preview ai-edit export-settings; do
             test -s "artifacts/feature-screenshots/$name.png"
           done
-      - name: Run edit-history BDD and detect a known regression
+      - name: Verify the history BDD detects a known regression
+        shell: bash
         run: |
-          python3 -m venv "$RUNNER_TEMP/history-bdd"
-          "$RUNNER_TEMP/history-bdd/bin/python" -m pip install --require-hashes --only-binary=:all: -r tools/docs-check-requirements.txt
-          "$RUNNER_TEMP/history-bdd/bin/python" tools/check-history-bdd.py --check-mutation
+          mutation=$(mktemp -d)
+          trap 'rm -rf "$mutation"' EXIT
+          git archive HEAD rust docs/features/edit-history.feature | tar -x -C "$mutation"
+          history="$mutation/rust/src/history.rs"
+          test "$(grep -Fxc '            self.redo.clear();' "$history")" -eq 1
+          sed -i '/^            self\.redo\.clear();$/d' "$history"
+          cargo test --manifest-path "$mutation/rust/Cargo.toml" \
+            --target-dir "$GITHUB_WORKSPACE/rust/target" --locked --release \
+            --test history_bdd -- --ignored --exact --nocapture history_bdd_detects_redo_regression \
+            | tee "$mutation/history-bdd.log"
+          grep -q '^DETECTED docs/features/edit-history.feature:' "$mutation/history-bdd.log"
 
   windows:
     name: Windows tests and screenshot
