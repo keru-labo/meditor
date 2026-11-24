@@ -94,15 +94,11 @@ fn caption_text(captions: &[Caption], active: &[usize]) -> String {
     let mut text = String::new();
     for &row in active {
         let cue = &captions[row];
-        if cue.speaker.is_empty() && cue.text.is_empty() {
+        if cue.text.is_empty() {
             continue;
         }
         if !text.is_empty() {
             text.push('\n');
-        }
-        if !cue.speaker.is_empty() {
-            text.push_str(&cue.speaker);
-            text.push_str(": ");
         }
         text.push_str(&cue.text);
     }
@@ -128,26 +124,21 @@ mod tests {
         let cues = [
             cue(0, 20, "話者A", "first\nline"),
             cue(10, 30, "", "overlap"),
-            cue(20, 25, "話者B", "replacement"),
+            cue(20, 25, "話者B", "A: replacement"),
+            cue(20, 25, "話者C", ""),
         ];
         let mut overlay = CaptionOverlay::default();
         assert_eq!(overlay.rebuild(&cues), "");
-        assert_eq!(overlay.present(&cues, 0).unwrap(), "話者A: first\nline");
+        assert_eq!(overlay.present(&cues, 0).unwrap(), "first\nline");
         assert_eq!(overlay.present(&cues, 9), None);
-        assert_eq!(
-            overlay.present(&cues, 10).unwrap(),
-            "話者A: first\nline\noverlap"
-        );
+        assert_eq!(overlay.present(&cues, 10).unwrap(), "first\nline\noverlap");
         assert_eq!(
             overlay.present(&cues, 20).unwrap(),
-            "overlap\n話者B: replacement"
+            "overlap\nA: replacement"
         );
         assert_eq!(overlay.present(&cues, 25).unwrap(), "overlap");
         assert_eq!(overlay.present(&cues, 30).unwrap(), "");
-        assert_eq!(
-            overlay.present(&cues, 10).unwrap(),
-            "話者A: first\nline\noverlap"
-        );
+        assert_eq!(overlay.present(&cues, 10).unwrap(), "first\nline\noverlap");
     }
 
     #[test]
