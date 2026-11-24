@@ -1,0 +1,43 @@
+name: Quint chat edit model
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/formal-quint.yml'
+      - 'verification/quint/**'
+      - 'docs/features/chat-editing.*'
+      - 'docs/features/ai-clip-editing.*'
+      - 'docs/features/edit-history.*'
+      - 'rust/src/chat.rs'
+      - 'rust/src/main.rs'
+      - 'rust/src/history.rs'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/formal-quint.yml'
+      - 'verification/quint/**'
+      - 'docs/features/chat-editing.*'
+      - 'docs/features/ai-clip-editing.*'
+      - 'docs/features/edit-history.*'
+      - 'rust/src/chat.rs'
+      - 'rust/src/main.rs'
+      - 'rust/src/history.rs'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  chat-edit:
+    name: Check the chat edit model
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    defaults:
+      run:
+        working-directory: verification/quint
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - run: npm ci --ignore-scripts
+      - run: npm run check

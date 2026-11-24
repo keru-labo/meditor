@@ -47,4 +47,6 @@ cargo test --locked
 cargo mutants --output target --file src/lib.rs --file src/project.rs -- --locked
 ```
 
+AI 編集結果の適用条件を変更するときは、BDD と合わせて Quint のモデルを更新・検査します。 [Quint の実行手順](verification/quint/README.md)
+
 [製品要件](docs/requirements.md) · [編集用語](docs/ubiquitous-language.md) · [初回リリースの機能定義と BDD](docs/features/README.md) · [現行の設計](docs/design.md) · [編集ドメイン](docs/design/editing-domain.md) · [画面と操作](docs/design/editor-screens.md) · [文書の検査](docs/documentation-checks.md) · [受入条件](docs/acceptance.md) · [性能計測](docs/performance.md) · [Rust 採用 ADR](docs/adr/0001-rust-windows-editor.md) · [Rust 版への切り替え ADR](docs/adr/0002-rust-editor-cutover.md)
