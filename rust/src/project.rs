@@ -1,4 +1,4 @@
-use crate::history::EditHistory;
+use crate::{history::EditHistory, subtitle_style::SubtitleStyle};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
@@ -63,6 +63,10 @@ pub struct Project {
     pub proxy: PathBuf,
     pub audio: Vec<Track>,
     pub captions: Vec<Caption>,
+    #[serde(default, skip_serializing_if = "SubtitleStyle::is_default")]
+    pub subtitle_style: SubtitleStyle,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub captions_use_source_time: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clip: Option<ClipRange>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -77,6 +81,8 @@ impl Project {
             proxy: PathBuf::new(),
             audio,
             captions: Vec::new(),
+            subtitle_style: SubtitleStyle::default(),
+            captions_use_source_time: false,
             clip: None,
             edit_history: None,
         };
@@ -173,6 +179,16 @@ impl Project {
         })
     }
 
+    /// Add this offset to a playhead position to look up a stored caption.
+    /// Subtract it from a stored caption time to place the caption on the timeline.
+    pub fn caption_time_offset(&self, range: ClipRange) -> i64 {
+        if self.captions_use_source_time {
+            range.source_start_us
+        } else {
+            0
+        }
+    }
+
     fn media_paths_mut(&mut self) -> impl Iterator<Item = &mut PathBuf> {
         [&mut self.video, &mut self.proxy]
             .into_iter()
@@ -181,6 +197,7 @@ impl Project {
 
     fn validate(&self) -> Result<()> {
         ensure!(!self.video.as_os_str().is_empty(), "元動画が必要です");
+        self.subtitle_style.validate()?;
         match (self.version, self.clip) {
             (1, None) => {}
             (2, Some(range)) => ensure!(range.valid_for(MAX_DURATION), "素材区間が無効です"),
@@ -212,6 +229,10 @@ impl Project {
         }
         Ok(())
     }
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 pub fn import_srt(path: &Path) -> Result<Vec<Caption>> {

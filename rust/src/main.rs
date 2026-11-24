@@ -6,12 +6,16 @@ mod audio;
 mod caption_overlay;
 mod video;
 
+mod chat;
+
 use anyhow::{Context, Result, ensure};
 use audio::AudioMixer;
+use chat::{ChatSelection, SelectionInput};
 use meditor_playback::{
     SeekController, SeekMode, VideoSource,
     history::{Edit, EditHistory, EditTarget},
     project::{ClipRange, Project, SECOND, Track, import_srt, parse_seconds},
+    subtitle_style::SubtitleStyle,
     transcription::{TranscriptionCancellation, transcribe_with_cancellation},
 };
 use serde_json::{Value, json};
@@ -76,6 +80,11 @@ impl Loaded {
         self.project.playback_range(self.video.duration)
     }
 
+    fn caption_time(&self, source_us: i64) -> i64 {
+        let range = self.range();
+        (source_us - range.source_start_us).max(0) + self.project.caption_time_offset(range)
+    }
+
     fn open(mut project: Project, path: PathBuf) -> Result<Self> {
         let proxy = (!project.proxy.as_os_str().is_empty()).then(|| project.proxy.clone());
         let video = VideoWorker::open(project.video.clone(), proxy)?;
@@ -117,6 +126,7 @@ struct Editor {
     last_scrub_send: Option<Instant>,
     last_play_send: Option<Instant>,
     last_frame: Option<Arc<VideoFrame>>,
+    chat: ChatSelection,
     leaving: Option<Leave>,
     metrics: Metrics,
     smoke: Option<Smoke>,
@@ -129,10 +139,23 @@ struct TranscriptionJob {
 }
 
 struct Smoke {
-    screenshot: Option<PathBuf>,
+    screenshots: Option<ScreenshotOutput>,
     deadline: Instant,
     phase: SmokePhase,
 }
+
+enum ScreenshotOutput {
+    Single(PathBuf),
+    Features(PathBuf),
+}
+
+const FEATURE_SCREENSHOTS: [(&str, ScreenshotPanel); 5] = [
+    ("editor.png", ScreenshotPanel::Editor),
+    ("subtitle-preview.png", ScreenshotPanel::SubtitlePreview),
+    ("subtitle-style.png", ScreenshotPanel::SubtitleStyle),
+    ("ai-edit.png", ScreenshotPanel::AiEdit),
+    ("export-settings.png", ScreenshotPanel::ExportSettings),
+];
 
 #[derive(Clone, Copy, Debug)]
 enum SmokePhase {
@@ -140,17 +163,22 @@ enum SmokePhase {
     Playing,
     Proxy,
     Resuming,
-    Capture(Instant),
+    Capture { ready_at: Instant, index: usize },
 }
 
 impl Editor {
     fn install(&mut self, ui: &EditorWindow, loaded: Loaded) {
         self.stop(ui);
+        self.invalidate_chat(ui, "プロジェクトが変わったため AI の結果は反映しません");
+        ui.set_ai_prompt("".into());
+        ui.set_ai_export_ready(false);
+        if !self.chat.is_running() {
+            ui.set_ai_status("".into());
+        }
         self.scrubbing = false;
         self.scrub_pending = None;
         ui.set_frame(slint::Image::default());
         self.last_frame = None;
-        self.caption_overlay.clear_frame();
         self.metrics = Metrics::default();
         ui.set_measuring(false);
         ui.set_has_project(true);
@@ -172,6 +200,7 @@ impl Editor {
             format!("音声 {} トラック", loaded.project.audio.len())
         };
         self.loaded = Some(loaded);
+        show_subtitle_style(ui, &self.loaded.as_ref().unwrap().project.subtitle_style);
         self.refresh_history_controls(ui);
         self.refresh_captions(ui);
         self.show_clip(ui);
@@ -374,6 +403,7 @@ impl Editor {
             .pick_file()
         {
             loaded.project.captions = import_srt(&path)?;
+            loaded.project.captions_use_source_time = false;
             loaded.dirty = true;
             // The replacement changes the identities and positions of subtitle rows.
             loaded.history = EditHistory::default();
@@ -390,11 +420,14 @@ impl Editor {
             loaded.project.captions.iter().map(caption_row),
         ));
         ui.set_captions(self.captions.clone().into());
-        ui.set_preview_caption(
+        ui.set_captions_use_source_time(loaded.project.captions_use_source_time);
+        self.caption_overlay.clear_frame();
+        self.caption_overlay.rebuild(&loaded.project.captions);
+        let text = self.last_frame.as_ref().and_then(|frame| {
             self.caption_overlay
-                .rebuild(&loaded.project.captions)
-                .into(),
-        );
+                .present(&loaded.project.captions, loaded.caption_time(frame.pts))
+        });
+        ui.set_preview_caption(text.unwrap_or_default().into());
         self.selected = None;
         ui.set_selected(-1);
         ui.set_speaker_text("".into());
@@ -404,7 +437,8 @@ impl Editor {
 
     fn select(&mut self, ui: &EditorWindow, index: i32) -> Option<i64> {
         let row = usize::try_from(index).ok()?;
-        let caption = self.loaded.as_ref()?.project.captions.get(row)?;
+        let loaded = self.loaded.as_ref()?;
+        let caption = loaded.project.captions.get(row)?;
         self.selected = Some(row);
         ui.set_selected(index);
         ui.set_speaker_text(caption.speaker.as_str().into());
@@ -417,7 +451,14 @@ impl Editor {
             )
             .into(),
         );
-        Some(caption.start_us)
+        let range = loaded.range();
+        let offset = loaded.project.caption_time_offset(range);
+        if loaded.project.captions_use_source_time
+            && (caption.end_us <= offset || caption.start_us >= offset + range.duration())
+        {
+            return None;
+        }
+        Some((caption.start_us - offset).max(0))
     }
 
     fn edit_caption(&mut self, ui: &EditorWindow) -> Result<()> {
@@ -457,32 +498,62 @@ impl Editor {
         Ok(())
     }
 
-    fn show_clip(&self, ui: &EditorWindow) {
-        let range = self.loaded.as_ref().unwrap().range();
+    fn show_clip(&mut self, ui: &EditorWindow) {
+        let loaded = self.loaded.as_ref().unwrap();
+        let range = loaded.range();
+        let ai_source_available = loaded.project.clip.is_none();
+        ui.set_ai_source_available(ai_source_available);
+        ui.set_captions_use_source_time(loaded.project.captions_use_source_time);
+        if ai_source_available && ui.get_ai_export_ready() {
+            ui.set_ai_export_ready(false);
+            ui.set_ai_status("".into());
+        }
+        if !ai_source_available {
+            self.invalidate_chat(ui, "素材区間が変わったため AI の結果は反映しません");
+        }
         ui.set_clip_start(seconds_text(range.source_start_us).into());
         ui.set_clip_end(seconds_text(range.source_end_us).into());
     }
 
     fn edit_clip(&mut self, ui: &EditorWindow) -> Result<()> {
-        let Some(loaded) = self.loaded.as_mut() else {
+        if self.loaded.is_none() {
             return Ok(());
-        };
-        let before = loaded.range();
+        }
         let range = ClipRange {
             source_start_us: parse_seconds(ui.get_clip_start().as_str())
                 .context("開始時刻を確認してください")?,
             source_end_us: parse_seconds(ui.get_clip_end().as_str())
                 .context("終了時刻を確認してください")?,
         };
-        if before != range
-            && loaded
-                .history
-                .apply(
-                    &mut loaded.project,
-                    loaded.video.duration,
-                    Edit::Clip(Some(range)),
-                )?
-                .is_some()
+        self.apply_clip(ui, range, false)
+    }
+
+    fn apply_clip(
+        &mut self,
+        ui: &EditorWindow,
+        range: ClipRange,
+        source_captions: bool,
+    ) -> Result<()> {
+        let loaded = self
+            .loaded
+            .as_mut()
+            .context("プロジェクトを開いてください")?;
+        let before = loaded.range();
+        if before == range {
+            return Ok(());
+        }
+        let edit = if source_captions && !loaded.project.captions_use_source_time {
+            Edit::ClipWithCaptionBasis {
+                range: Some(range),
+                captions_use_source_time: true,
+            }
+        } else {
+            Edit::Clip(Some(range))
+        };
+        if loaded
+            .history
+            .apply(&mut loaded.project, loaded.video.duration, edit)?
+            .is_some()
         {
             loaded.dirty = true;
             self.refresh_clip(ui, before.source_start_us);
@@ -504,6 +575,38 @@ impl Editor {
         let history = self.loaded.as_ref().map(|loaded| &loaded.history);
         ui.set_can_undo(history.is_some_and(EditHistory::can_undo));
         ui.set_can_redo(history.is_some_and(EditHistory::can_redo));
+    }
+
+    fn edit_subtitle_style(&mut self, ui: &EditorWindow, draft: SubtitleStyleDraft) -> Result<()> {
+        let loaded = self
+            .loaded
+            .as_mut()
+            .context("プロジェクトを開いてください")?;
+        let style = SubtitleStyle {
+            font_family: draft.font_family.trim().to_owned(),
+            font_size: u16::try_from(draft.font_size).context("文字サイズを確認してください")?,
+            text_color: parse_subtitle_color(&draft.text_color)
+                .context("文字色を確認してください")?,
+            outline_color: parse_subtitle_color(&draft.outline_color)
+                .context("縁取りの色を確認してください")?,
+            outline_width: u8::try_from(draft.outline_width)
+                .context("縁取りの太さを確認してください")?,
+        };
+        if loaded
+            .history
+            .apply(
+                &mut loaded.project,
+                loaded.video.duration,
+                Edit::SubtitleStyle(style),
+            )?
+            .is_some()
+        {
+            loaded.dirty = true;
+            show_subtitle_style(ui, &loaded.project.subtitle_style);
+            self.refresh_history_controls(ui);
+            ui.set_status("字幕スタイルを更新しました".into());
+        }
+        Ok(())
     }
 
     fn replay_history(&mut self, ui: &EditorWindow, redo: bool) -> Result<()> {
@@ -533,6 +636,7 @@ impl Editor {
                 }
             }
             EditTarget::Clip => self.refresh_clip(ui, before.source_start_us),
+            EditTarget::SubtitleStyle => show_subtitle_style(ui, &loaded.project.subtitle_style),
         }
         self.refresh_history_controls(ui);
         ui.set_status(
@@ -743,7 +847,7 @@ impl Editor {
         let pts = frame.pts - range.source_start_us;
         if let Some(text) = self
             .caption_overlay
-            .present(&loaded.project.captions, pts.max(0))
+            .present(&loaded.project.captions, loaded.caption_time(frame.pts))
         {
             ui.set_preview_caption(text.into());
         }
@@ -841,23 +945,46 @@ impl Editor {
                     "元動画と音声で再開できません"
                 );
                 self.stop(ui);
-                SmokePhase::Capture(now + Duration::from_millis(100))
+                SmokePhase::Capture {
+                    ready_at: now + Duration::from_millis(100),
+                    index: 0,
+                }
             }
-            SmokePhase::Capture(ready_at) if now >= ready_at => {
-                if let Some(path) = &smoke.screenshot {
-                    let pixels = ui.window().take_snapshot().map_err(anyhow::Error::msg)?;
-                    let rgb: Vec<_> = pixels
-                        .as_slice()
-                        .iter()
-                        .flat_map(|pixel| [pixel.r, pixel.g, pixel.b])
-                        .collect();
-                    image::save_buffer(
-                        path,
-                        &rgb,
-                        pixels.width(),
-                        pixels.height(),
-                        image::ColorType::Rgb8,
-                    )?;
+            SmokePhase::Capture { ready_at, index } if now >= ready_at => {
+                match &smoke.screenshots {
+                    Some(ScreenshotOutput::Single(path)) => capture_window(ui, path)?,
+                    Some(ScreenshotOutput::Features(directory)) => {
+                        if index == 0 {
+                            std::fs::create_dir_all(directory)?;
+                        }
+                        let (name, _) = FEATURE_SCREENSHOTS[index];
+                        capture_window(ui, &directory.join(name))?;
+                        let next = index + 1;
+                        if let Some((_, panel)) = FEATURE_SCREENSHOTS.get(next) {
+                            if *panel == ScreenshotPanel::SubtitlePreview {
+                                show_subtitle_style(
+                                    ui,
+                                    &SubtitleStyle {
+                                        font_size: 36,
+                                        text_color: [255, 211, 84],
+                                        outline_color: [24, 35, 79],
+                                        outline_width: 4,
+                                        ..SubtitleStyle::default()
+                                    },
+                                );
+                            }
+                            if *panel == ScreenshotPanel::AiEdit {
+                                ui.set_ai_prompt("ボス戦の感想を字幕付きの縦動画にして".into());
+                            }
+                            ui.invoke_show_screenshot_panel(*panel);
+                            self.smoke.as_mut().unwrap().phase = SmokePhase::Capture {
+                                ready_at: now + Duration::from_millis(150),
+                                index: next,
+                            };
+                            return Ok(false);
+                        }
+                    }
+                    None => {}
                 }
                 slint::quit_event_loop().map_err(anyhow::Error::msg)?;
                 self.smoke = None;
@@ -945,6 +1072,106 @@ impl Editor {
         }
         Ok(())
     }
+
+    fn submit_chat(&mut self, ui: &EditorWindow) -> Result<()> {
+        let loaded = self
+            .loaded
+            .as_ref()
+            .context("プロジェクトを開いてください")?;
+        ensure!(
+            loaded.project.clip.is_none(),
+            "区間を設定していないプロジェクトと全編に対応する字幕が必要です"
+        );
+        let prompt = ui.get_ai_prompt().trim().to_owned();
+        ensure!(!prompt.is_empty(), "編集の指示を入力してください");
+        ensure!(
+            !loaded.project.captions.is_empty(),
+            "時刻付き字幕を読み込んでください"
+        );
+        let input = SelectionInput {
+            bounds: loaded.range(),
+            captions: loaded.project.captions.clone(),
+            clip_draft: clip_draft(ui),
+        };
+        self.chat.start(input, move |input, cancelled| {
+            meditor_playback::ai::select_codex_clip(
+                &prompt,
+                &input.captions,
+                input.bounds,
+                cancelled,
+            )
+        })?;
+        ui.set_ai_busy(true);
+        ui.set_ai_cancellable(true);
+        ui.set_ai_status("処理中です".into());
+        Ok(())
+    }
+
+    fn invalidate_chat(&mut self, ui: &EditorWindow, message: &str) {
+        if self.chat.invalidate() {
+            ui.set_ai_cancellable(false);
+            ui.set_ai_status(message.into());
+        }
+    }
+
+    fn poll_chat(&mut self, ui: &EditorWindow) -> Result<()> {
+        if !self.chat.is_running() || self.leaving.is_some() {
+            return Ok(());
+        }
+        let result = self.chat.poll();
+        if !self.chat.is_running() {
+            ui.set_ai_busy(false);
+            ui.set_ai_cancellable(false);
+        }
+        let Some(result) = result? else { return Ok(()) };
+        let Some(loaded) = &self.loaded else {
+            return Ok(());
+        };
+        if loaded.project.clip.is_some()
+            || !result
+                .input
+                .matches(loaded.range(), &loaded.project.captions, &clip_draft(ui))
+        {
+            ui.set_ai_status("編集内容が変わったため AI の結果は反映しません".into());
+            return Ok(());
+        }
+        let Some(selection) = result.selection? else {
+            ui.set_ai_status("指示に合う区間が見つかりませんでした".into());
+            return Ok(());
+        };
+        let range = selection.range;
+        ensure!(
+            range.valid_for(loaded.video.duration)
+                && range.source_start_us >= result.input.bounds.source_start_us
+                && range.source_end_us <= result.input.bounds.source_end_us,
+            "AI が対象区間外の時刻を返しました"
+        );
+        let whole_source = range == loaded.range();
+        // Use the same checked apply path as a manually entered clip edit.
+        ui.set_clip_start(seconds_text(range.source_start_us).into());
+        ui.set_clip_end(seconds_text(range.source_end_us).into());
+        if let Err(error) = self.apply_clip(ui, range, true) {
+            let [start, end] = result.input.clip_draft;
+            ui.set_clip_start(start.into());
+            ui.set_clip_end(end.into());
+            return Err(error);
+        }
+        if let Some(preferences) = selection.export {
+            ui.set_ai_export_selection(preferences.into());
+        }
+        ui.set_ai_export_ready(selection.export.is_some());
+        let status = if whole_source {
+            "素材全体を選びました".to_owned()
+        } else {
+            format!(
+                "素材の {} – {} を区間に反映しました",
+                timestamp(range.source_start_us),
+                timestamp(range.source_end_us),
+            )
+        };
+        ui.set_ai_status(status.into());
+        Ok(())
+    }
 }
 
 fn timestamp(micros: i64) -> String {
@@ -959,6 +1186,42 @@ fn timestamp(micros: i64) -> String {
 
 fn seconds_text(micros: i64) -> String {
     format!("{}.{:06}", micros / SECOND, micros % SECOND)
+}
+
+fn clip_draft(ui: &EditorWindow) -> [String; 2] {
+    [
+        ui.get_clip_start().to_string(),
+        ui.get_clip_end().to_string(),
+    ]
+}
+
+fn show_subtitle_style(ui: &EditorWindow, style: &SubtitleStyle) {
+    let [red, green, blue] = style.text_color;
+    let [outline_red, outline_green, outline_blue] = style.outline_color;
+    ui.set_caption_appearance(CaptionAppearance {
+        font_family: style.font_family.as_str().into(),
+        font_size: i32::from(style.font_size),
+        text_color: slint::Color::from_rgb_u8(red, green, blue),
+        outline_color: slint::Color::from_rgb_u8(outline_red, outline_green, outline_blue),
+        outline_width: i32::from(style.outline_width),
+    });
+    ui.set_subtitle_style_draft(SubtitleStyleDraft {
+        font_family: style.font_family.as_str().into(),
+        font_size: i32::from(style.font_size),
+        text_color: format!("#{red:02X}{green:02X}{blue:02X}").into(),
+        outline_color: format!("#{outline_red:02X}{outline_green:02X}{outline_blue:02X}").into(),
+        outline_width: i32::from(style.outline_width),
+    });
+}
+
+fn parse_subtitle_color(input: &str) -> Result<[u8; 3]> {
+    let hex = input.trim().strip_prefix('#').unwrap_or(input.trim());
+    ensure!(
+        hex.len() == 6 && hex.bytes().all(|digit| digit.is_ascii_hexdigit()),
+        "#RRGGBB 形式で入力してください"
+    );
+    let [_, red, green, blue] = u32::from_str_radix(hex, 16)?.to_be_bytes();
+    Ok([red, green, blue])
 }
 
 fn caption_row(caption: &meditor_playback::project::Caption) -> CaptionRow {
@@ -1003,7 +1266,14 @@ fn bind(ui: &EditorWindow, state: &Rc<RefCell<Editor>>) {
     callback!(on_new_project, |editor, ui| editor
         .request_leave(&ui, Leave::New));
     callback!(on_save_project, |editor, ui| editor.save(&ui));
-    callback!(on_import_captions, |editor, ui| editor.import(&ui));
+    callback!(on_import_captions, |editor, ui| {
+        let before = editor.captions.clone();
+        let result = editor.import(&ui);
+        if !Rc::ptr_eq(&before, &editor.captions) {
+            editor.invalidate_chat(&ui, "字幕が変わったため AI の結果は反映しません");
+        }
+        result
+    });
     callback!(on_choose_proxy, |editor, ui| editor.choose_proxy(&ui));
     callback!(on_update_clip, |editor, ui| editor.edit_clip(&ui));
     callback!(on_save_metrics, |editor, ui| editor.save_metrics(&ui));
@@ -1030,6 +1300,22 @@ fn bind(ui: &EditorWindow, state: &Rc<RefCell<Editor>>) {
         Ok(())
     });
     callback!(on_update_caption, |editor, ui| editor.edit_caption(&ui));
+    {
+        let window = ui.as_weak();
+        let state = state.clone();
+        ui.on_update_subtitle_style(move |draft| {
+            let Some(ui) = window.upgrade() else {
+                return false;
+            };
+            match state.borrow_mut().edit_subtitle_style(&ui, draft) {
+                Ok(()) => true,
+                Err(error) => {
+                    ui.set_subtitle_style_error(format!("{error:#}").into());
+                    false
+                }
+            }
+        });
+    }
     callback!(on_undo_edit, |editor, ui| editor.replay_history(&ui, false));
     callback!(on_redo_edit, |editor, ui| editor.replay_history(&ui, true));
     callback!(on_scrub, |editor, ui, value| {
@@ -1076,6 +1362,20 @@ fn bind(ui: &EditorWindow, state: &Rc<RefCell<Editor>>) {
         editor.leaving = None;
         Ok(())
     });
+    callback!(on_ai_send, |editor, ui| {
+        if let Err(error) = editor.submit_chat(&ui) {
+            ui.set_ai_status(format!("{error:#}").into());
+        }
+        Ok(())
+    });
+    callback!(on_ai_caption_edit, |editor, ui| {
+        editor.invalidate_chat(&ui, "字幕が変わったため AI の結果は反映しません");
+        Ok(())
+    });
+    callback!(on_ai_cancel, |editor, ui| {
+        editor.invalidate_chat(&ui, "Codex の処理を中断しました");
+        Ok(())
+    });
     let window = ui.as_weak();
     let state = state.clone();
     ui.window().on_close_requested(move || {
@@ -1087,6 +1387,11 @@ fn bind(ui: &EditorWindow, state: &Rc<RefCell<Editor>>) {
             }
             if editor.export_result.is_some() {
                 ui.set_status("書き出しの完了後に閉じてください".into());
+                return slint::CloseRequestResponse::KeepWindowShown;
+            }
+            if editor.chat.is_running() {
+                editor.invalidate_chat(&ui, "Codex の処理を中断しました");
+                ui.set_status("AI 処理の終了後に閉じてください".into());
                 return slint::CloseRequestResponse::KeepWindowShown;
             }
             if editor.loaded.as_ref().is_some_and(|loaded| loaded.dirty) {
@@ -1104,6 +1409,28 @@ struct Launch {
     smoke: Option<Smoke>,
 }
 
+fn capture_window(ui: &EditorWindow, path: &std::path::Path) -> Result<()> {
+    let pixels = ui.window().take_snapshot().map_err(anyhow::Error::msg)?;
+    let rgb: Vec<_> = pixels
+        .as_slice()
+        .iter()
+        .flat_map(|pixel| [pixel.r, pixel.g, pixel.b])
+        .collect();
+    image::save_buffer(
+        path,
+        &rgb,
+        pixels.width(),
+        pixels.height(),
+        image::ColorType::Rgb8,
+    )
+    .with_context(|| {
+        format!(
+            "スクリーンショットを保存できませんでした ({})",
+            path.display()
+        )
+    })
+}
+
 fn arguments(mut args: impl Iterator<Item = OsString>) -> Result<Launch> {
     let Some(first) = args.next() else {
         return Ok(Launch {
@@ -1111,11 +1438,22 @@ fn arguments(mut args: impl Iterator<Item = OsString>) -> Result<Launch> {
             smoke: None,
         });
     };
-    let launch = if first == "--smoke-test" {
+    let launch = if first == "--smoke-test" || first == "--feature-screenshots" {
+        let project = args.next().context("合成プロジェクトを指定してください")?;
+        let screenshots = if first == "--feature-screenshots" {
+            Some(ScreenshotOutput::Features(
+                args.next()
+                    .context("スクリーンショットの保存フォルダーを指定してください")?
+                    .into(),
+            ))
+        } else {
+            args.next()
+                .map(|path| ScreenshotOutput::Single(path.into()))
+        };
         Launch {
-            project: Some(args.next().context("--smoke-test PROJECT [PNG]")?.into()),
+            project: Some(project.into()),
             smoke: Some(Smoke {
-                screenshot: args.next().map(PathBuf::from),
+                screenshots,
                 deadline: Instant::now() + Duration::from_secs(45),
                 phase: SmokePhase::FirstFrame,
             }),
@@ -1128,7 +1466,7 @@ fn arguments(mut args: impl Iterator<Item = OsString>) -> Result<Launch> {
     };
     ensure!(
         args.next().is_none(),
-        "meditor [PROJECT] または meditor --smoke-test PROJECT [PNG]"
+        "meditor [PROJECT] | --smoke-test PROJECT [PNG] | --feature-screenshots PROJECT DIRECTORY"
     );
     Ok(launch)
 }
@@ -1182,6 +1520,9 @@ fn main() -> Result<()> {
                         }
                         ui.set_status(format!("{failure:#}").into());
                     }
+                }
+                if let Err(failure) = editor.poll_chat(&ui) {
+                    ui.set_ai_status(format!("{failure:#}").into());
                 }
             }
         });

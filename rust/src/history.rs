@@ -1,6 +1,9 @@
-//! Reversible caption and clip edits.
+//! Reversible caption, subtitle style and clip edits.
 
-use crate::project::{ClipRange, Project};
+use crate::{
+    project::{ClipRange, Project},
+    subtitle_style::SubtitleStyle,
+};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::value::{RawValue, to_raw_value};
@@ -26,11 +29,18 @@ pub enum Edit {
         text: String,
     },
     Clip(Option<ClipRange>),
+    ClipWithCaptionBasis {
+        #[serde(deserialize_with = "Option::deserialize")]
+        range: Option<ClipRange>,
+        captions_use_source_time: bool,
+    },
+    SubtitleStyle(SubtitleStyle),
 }
 
 pub enum EditTarget {
     Caption(usize),
     Clip,
+    SubtitleStyle,
 }
 
 impl Edit {
@@ -64,6 +74,32 @@ impl Edit {
                 project.set_clip_override(*range, duration)?;
                 *range = previous;
                 Ok(Some(EditTarget::Clip))
+            }
+            Self::ClipWithCaptionBasis {
+                range,
+                captions_use_source_time,
+            } => {
+                if project.clip == *range
+                    && project.captions_use_source_time == *captions_use_source_time
+                {
+                    return Ok(None);
+                }
+                let previous = project.clip;
+                project.set_clip_override(*range, duration)?;
+                *range = previous;
+                mem::swap(
+                    &mut project.captions_use_source_time,
+                    captions_use_source_time,
+                );
+                Ok(Some(EditTarget::Clip))
+            }
+            Self::SubtitleStyle(style) => {
+                style.validate()?;
+                if project.subtitle_style == *style {
+                    return Ok(None);
+                }
+                mem::swap(&mut project.subtitle_style, style);
+                Ok(Some(EditTarget::SubtitleStyle))
             }
         }
     }
@@ -198,6 +234,8 @@ fn validate_sequence(edits: &[Edit], project: &Project, duration: i64) -> Result
         "作業履歴の件数が上限を超えました"
     );
     let mut clip = project.clip;
+    let mut captions_use_source_time = project.captions_use_source_time;
+    let mut subtitle_style = &project.subtitle_style;
     let mut captions = HashMap::new();
     for edit in edits.iter().rev() {
         match edit {
@@ -225,6 +263,26 @@ fn validate_sequence(edits: &[Edit], project: &Project, duration: i64) -> Result
                     "作業履歴の素材区間が無効です"
                 );
                 clip = *range;
+            }
+            Edit::ClipWithCaptionBasis {
+                range,
+                captions_use_source_time: next_basis,
+            } => {
+                ensure!(
+                    (clip != *range || captions_use_source_time != *next_basis)
+                        && range.is_none_or(|range| range.valid_for(duration)),
+                    "作業履歴の素材区間または字幕時刻の基準が無効です"
+                );
+                clip = *range;
+                captions_use_source_time = *next_basis;
+            }
+            Edit::SubtitleStyle(style) => {
+                style.validate()?;
+                ensure!(
+                    subtitle_style != style,
+                    "作業履歴の字幕スタイルが変更前と同じです"
+                );
+                subtitle_style = style;
             }
         }
     }

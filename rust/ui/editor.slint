@@ -1,5 +1,16 @@
 import { AboutSlint, Button, CheckBox, LineEdit, ListView, TextEdit } from "std-widgets.slint";
 import { ExportSelection, ExportSettings } from "export-settings.slint";
+import { SubtitleStyleDraft, SubtitleStyleSettings } from "subtitle-style-settings.slint";
+
+export struct CaptionAppearance {
+    font-family: string,
+    font-size: int,
+    text-color: color,
+    outline-color: color,
+    outline-width: int,
+}
+
+export enum ScreenshotPanel { Editor, SubtitlePreview, SubtitleStyle, AiEdit, ExportSettings }
 
 export struct CaptionRow {
     time-label: string,
@@ -28,6 +39,9 @@ export component EditorWindow inherits Window {
     in property <bool> can-redo;
     in property <image> frame;
     in property <string> preview-caption;
+    in property <CaptionAppearance> caption-appearance;
+    in property <SubtitleStyleDraft> subtitle-style-draft;
+    in-out property <string> subtitle-style-error;
     in property <int> playhead;
     in property <int> selected: -1;
     in property <string> selection-label;
@@ -40,6 +54,17 @@ export component EditorWindow inherits Window {
     in-out property <string> clip-end;
     in-out property <bool> confirm-discard;
     property <bool> show-about;
+    property <bool> show-ai-chat;
+    in-out property <string> ai-prompt;
+    in property <string> ai-status;
+    in property <bool> ai-busy;
+    in property <bool> ai-cancellable;
+    in property <bool> ai-source-available;
+    in property <bool> ai-export-ready;
+    in property <bool> captions-use-source-time;
+    in property <ExportSelection> ai-export-selection;
+    property <int> ai-export-quality;
+    property <int> ai-export-canvas;
 
     callback open-project();
     callback new-project();
@@ -54,6 +79,7 @@ export component EditorWindow inherits Window {
     callback select-caption(int);
     callback goto-caption(int);
     callback update-caption();
+    callback update-subtitle-style(SubtitleStyleDraft) -> bool;
     callback update-clip();
     callback undo-edit();
     callback redo-edit();
@@ -63,6 +89,17 @@ export component EditorWindow inherits Window {
     callback confirm-leave();
     callback save-and-leave();
     callback cancel-leave();
+    callback ai-send();
+    callback ai-cancel();
+    callback ai-caption-edit();
+
+    public function show-screenshot-panel(panel: ScreenshotPanel) {
+        subtitle-style-settings.close();
+        export-settings.close();
+        root.show-ai-chat = panel == ScreenshotPanel.AiEdit;
+        if panel == ScreenshotPanel.SubtitleStyle { subtitle-style-settings.show(); }
+        if panel == ScreenshotPanel.ExportSettings { export-settings.show(); }
+    }
 
     VerticalLayout {
         padding: 16px;
@@ -103,25 +140,43 @@ export component EditorWindow inherits Window {
                         source: root.frame;
                         image-fit: contain;
                     }
-                    if !root.preview-caption.is-empty: Rectangle {
+                    if !root.preview-caption.is-empty: caption-layout := Rectangle {
                         property <float> frame-ratio: root.frame.width / max(1, root.frame.height);
                         property <length> content-width: min(parent.width - 2px, (parent.height - 2px) * self.frame-ratio);
                         property <length> content-height: min(parent.height - 2px, (parent.width - 2px) / max(0.001, self.frame-ratio));
+                        property <length> outline-radius: self.content-height * root.caption-appearance.outline-width / 360;
+                        property <length> text-padding: max(6px, self.outline-radius + 1px);
                         width: self.content-width * 0.9;
-                        height: min(caption.preferred-height + 10px, self.content-height * 0.45);
+                        height: min(caption.preferred-height + self.text-padding * 2, self.content-height * 0.45);
                         x: (parent.width - self.width) / 2;
-                        y: (parent.height + self.content-height) / 2 - self.height - 6px;
-                        background: #101219dc;
-                        border-radius: 4px;
+                        y: (parent.height + self.content-height) / 2 - self.height - self.content-height * 20 / 360 + self.text-padding - self.outline-radius;
                         clip: true;
+                        // The software renderer does not stroke text. Use translated
+                        // copies of the same text behind the fill, with an inner ring for thicker outlines.
+                        for index in (caption-layout.outline-radius == 0px ? 0 : caption-layout.outline-radius > 3px ? 16 : 8): Text {
+                            property <angle> direction: Math.mod(index, 8) * 45deg;
+                            property <length> radius: index < 8 ? parent.outline-radius : parent.outline-radius / 2;
+                            x: caption.x + Math.cos(self.direction) * self.radius;
+                            y: caption.y + Math.sin(self.direction) * self.radius;
+                            width: caption.width;
+                            height: caption.height;
+                            text: caption.text;
+                            font-family: caption.font-family;
+                            font-size: caption.font-size;
+                            color: root.caption-appearance.outline-color;
+                            horizontal-alignment: caption.horizontal-alignment;
+                            wrap: caption.wrap;
+                            overflow: caption.overflow;
+                        }
                         caption := Text {
-                            x: 6px;
-                            y: 5px;
-                            width: parent.width - 12px;
-                            height: parent.height - 10px;
+                            x: parent.text-padding;
+                            y: parent.text-padding;
+                            width: max(0px, parent.width - parent.text-padding * 2);
+                            height: max(0px, parent.height - parent.text-padding * 2);
                             text: root.preview-caption;
-                            color: #ffffff;
-                            font-size: clamp(parent.content-height / 20, 12px, 28px);
+                            font-family: root.caption-appearance.font-family;
+                            font-size: max(1px, parent.content-height * root.caption-appearance.font-size / 360);
+                            color: root.caption-appearance.text-color;
                             horizontal-alignment: center;
                             wrap: word-wrap;
                             overflow: elide;
@@ -202,12 +257,80 @@ export component EditorWindow inherits Window {
                     LineEdit { text <=> root.clip-end; enabled: root.has-project; accessible-label: "素材の終了時刻"; }
                     Button { text: "区間を適用"; enabled: root.has-project; clicked => { root.update-clip(); } }
                 }
+                if root.show-ai-chat: VerticalLayout {
+                    vertical-stretch: 0;
+                    alignment: start;
+                    padding: 8px;
+                    spacing: 6px;
+                    Text {
+                        text: "AI 区間選択 • Codex";
+                        color: #e8edfa;
+                        font-weight: 650;
+                    }
+                    Text {
+                        text: "送信すると、Codex の ChatGPT 接続に編集指示と字幕（時刻・話者名を含む）を送信します。";
+                        color: #a6afc3;
+                        wrap: word-wrap;
+                    }
+                    if !root.ai-source-available && !root.ai-export-ready: Text {
+                        text: "区間を設定していないプロジェクトと全編に対応する字幕が必要です。";
+                        color: #a7c6ff;
+                        wrap: word-wrap;
+                    }
+                    TextEdit {
+                        text <=> root.ai-prompt;
+                        enabled: root.has-project && root.ai-source-available && !root.ai-busy;
+                        placeholder-text: "残したい場面を入力";
+                        accessible-label: "AI への編集の指示";
+                        height: 56px;
+                    }
+                    HorizontalLayout {
+                        alignment: start;
+                        spacing: 8px;
+                        Button {
+                            text: "送信";
+                            enabled: root.has-project && root.ai-source-available && !root.ai-busy && root.ai-prompt != "";
+                            clicked => { root.ai-send(); }
+                        }
+                        Button { text: "中断"; enabled: root.ai-cancellable; clicked => { root.ai-cancel(); } }
+                        if root.ai-export-ready: Button {
+                            text: "書き出し設定を確認";
+                            enabled: !root.exporting && !root.ai-busy;
+                            clicked => {
+                                root.ai-export-quality = root.ai-export-selection.quality;
+                                root.ai-export-canvas = root.ai-export-selection.canvas;
+                                ai-export-settings.show();
+                            }
+                        }
+                    }
+                    if root.ai-status != "": Text {
+                        text: root.ai-status;
+                        color: #a7c6ff;
+                        wrap: word-wrap;
+                    }
+                }
             }
             VerticalLayout {
                 horizontal-stretch: 2;
                 min-width: 315px;
                 spacing: 8px;
-                Text { text: "字幕   " + root.captions.length; color: #e8edfa; font-size: 17px; font-weight: 650; }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text {
+                        text: (root.captions-use-source-time ? "字幕（素材時刻）   " : "字幕   ") + root.captions.length;
+                        color: #e8edfa; font-size: 17px; font-weight: 650;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+                    Button {
+                        text: "字幕スタイル";
+                        enabled: root.has-project;
+                        clicked => {
+                            root.subtitle-style-error = "";
+                            subtitle-style-settings.show();
+                        }
+                    }
+                }
                 Rectangle {
                     vertical-stretch: 1;
                     forward-focus: caption-keys;
@@ -257,13 +380,18 @@ export component EditorWindow inherits Window {
                     }
                 }
                 Text { text: root.selection-label; color: #a6afc3; overflow: elide; }
-                LineEdit { text <=> root.speaker-text; enabled: root.selected >= 0; placeholder-text: "話者"; edited(_) => { root.update-caption(); } }
-                TextEdit { text <=> root.caption-text; enabled: root.selected >= 0; placeholder-text: "字幕本文"; height: 98px; edited(_) => { root.update-caption(); } }
+                LineEdit { text <=> root.speaker-text; enabled: root.selected >= 0; placeholder-text: "話者"; edited(_) => { root.ai-caption-edit(); root.update-caption(); } }
+                TextEdit { text <=> root.caption-text; enabled: root.selected >= 0; placeholder-text: "字幕本文"; height: 98px; edited(_) => { root.ai-caption-edit(); root.update-caption(); } }
             }
         }
         HorizontalLayout {
             spacing: 8px;
             Text { text: root.status; color: #a6afc3; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
+            Button {
+                text: root.show-ai-chat ? "AI 編集を閉じる" : "AI 編集";
+                enabled: root.has-project;
+                clicked => { root.show-ai-chat = !root.show-ai-chat; }
+            }
             Button { text: root.measuring ? "計測停止" : "計測開始"; enabled: root.has-project; clicked => { root.toggle-measurement(); } }
             Button { text: "計測保存"; enabled: root.has-project; clicked => { root.save-metrics(); } }
             Button {
@@ -277,6 +405,20 @@ export component EditorWindow inherits Window {
         x: (root.width - self.width) / 2;
         y: (root.height - self.height) / 2;
         accepted(selection) => { root.export-video(selection); }
+    }
+    ai-export-settings := ExportSettings {
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+        quality-index <=> root.ai-export-quality;
+        canvas-index <=> root.ai-export-canvas;
+        accepted(selection) => { root.export-video(selection); }
+    }
+    subtitle-style-settings := SubtitleStyleSettings {
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+        draft: root.subtitle-style-draft;
+        error: root.subtitle-style-error;
+        accepted(draft) => { return root.update-subtitle-style(draft); }
     }
     if root.show-about: Rectangle {
         background: #b0101219;

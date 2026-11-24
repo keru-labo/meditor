@@ -28,7 +28,7 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends ca-certificates curl git build-essential pkg-config libclang-dev libfontconfig-dev libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libsdl2-dev ffmpeg xvfb xauth libxkbcommon-x11-0 fonts-noto-cjk
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
         with:
           toolchain: '1.100.0'
@@ -40,20 +40,22 @@ jobs:
       - run: cargo fmt --manifest-path rust/Cargo.toml --check
       - run: cargo clippy --manifest-path rust/Cargo.toml --locked --release --all-targets -- -D warnings
       - run: cargo test --manifest-path rust/Cargo.toml --locked --release
-      - name: Exercise preview with 10,000 captions
+      - name: Exercise preview and feature captures with 10,000 captions
         env:
           SDL_AUDIODRIVER: dummy
         run: |
           rust/target/release/meditor-fixture artifacts/fixture
-          xvfb-run -a timeout 55s rust/target/release/meditor --smoke-test artifacts/fixture/fixture.json artifacts/meditor-rust.png
-          test -s artifacts/meditor-rust.png
+          xvfb-run -a timeout 55s rust/target/release/meditor --feature-screenshots artifacts/fixture/fixture.json artifacts/feature-screenshots
+          for name in editor subtitle-style subtitle-preview ai-edit export-settings; do
+            test -s "artifacts/feature-screenshots/$name.png"
+          done
 
   windows:
     name: Windows tests and screenshot
     runs-on: windows-2022
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
         with:
           toolchain: '1.100.0'
@@ -81,26 +83,33 @@ jobs:
           $env:LIBCLANG_PATH = Join-Path $env:ProgramFiles 'LLVM/bin'
           cargo test --manifest-path rust/Cargo.toml --locked --release
           exit $LASTEXITCODE
-      - name: Capture the Rust editor with the 10,000-caption fixture
+      - name: Capture feature screenshots with the 10,000-caption fixture
         env:
           SDL_AUDIODRIVER: dummy
         run: |
           & rust/target/release/meditor-fixture.exe artifacts/fixture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $png = Join-Path $env:RUNNER_TEMP 'meditor-windows.png'
+          $screenshots = Join-Path $env:RUNNER_TEMP 'meditor-windows-screenshots'
+          New-Item -ItemType Directory -Path $screenshots -ErrorAction Stop | Out-Null
           $stderr = Join-Path $env:RUNNER_TEMP 'meditor-windows.stderr.txt'
           $app = Start-Process -FilePath rust/target/release/meditor.exe `
-            -ArgumentList '--smoke-test', 'artifacts/fixture/fixture.json', "`"$png`"" -NoNewWindow -PassThru -RedirectStandardError $stderr
+            -ArgumentList '--feature-screenshots', 'artifacts/fixture/fixture.json', "`"$screenshots`"" -NoNewWindow -PassThru -RedirectStandardError $stderr
           if (-not $app.WaitForExit(55000)) { $app.Kill(); throw 'Rust editor screenshot timed out' }
-          if ($app.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $png)) {
+          if ($app.ExitCode -ne 0) {
             Get-Content -LiteralPath $stderr
             throw "Rust editor screenshot failed ($($app.ExitCode))"
           }
-      - name: Upload Windows screenshot
+          foreach ($name in @('editor', 'subtitle-style', 'subtitle-preview', 'ai-edit', 'export-settings')) {
+            $png = Join-Path $screenshots "$name.png"
+            if (-not (Test-Path -LiteralPath $png -PathType Leaf) -or (Get-Item -LiteralPath $png).Length -eq 0) {
+              throw "Missing or empty Windows screenshot: $name.png"
+            }
+          }
+      - name: Upload Windows screenshots
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: meditor-windows-screenshot
-          path: ${{ runner.temp }}/meditor-windows.png
+          name: meditor-windows-screenshots
+          path: ${{ runner.temp }}/meditor-windows-screenshots/*.png
           if-no-files-found: error
           retention-days: 14
 
@@ -121,7 +130,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: meditor-windows-screenshot
+          name: meditor-windows-screenshots
       - uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
         with:
           script: |
@@ -129,15 +138,27 @@ jobs:
             const { owner, repo } = context.repo;
             const event = context.payload.pull_request;
             const number = event.number;
-            const { data: current } = await github.rest.pulls.get({ owner, repo, pull_number: number });
-            if (current.state !== 'open' || current.head.sha !== event.head.sha) return;
+            const isCurrentHead = async () => {
+              const { data: current } = await github.rest.pulls.get({ owner, repo, pull_number: number });
+              return current.state === 'open' && current.head.sha === event.head.sha;
+            };
+            if (!await isCurrentHead()) return;
 
-            const path = 'meditor-windows.png';
-            const png = fs.readFileSync(path);
-            if (png.length < 24 || png.length > 2 * 1024 * 1024 ||
-                png.subarray(0, 8).toString('hex') !== '89504e470d0a1a0a') {
-              throw new Error('Expected a Windows screenshot PNG of at most 2 MiB');
-            }
+            const screenshots = [
+              ['editor.png', '編集画面と字幕一覧'],
+              ['subtitle-style.png', '字幕スタイルの設定'],
+              ['subtitle-preview.png', 'スタイル適用後の字幕プレビュー'],
+              ['ai-edit.png', 'AI 編集パネル'],
+              ['export-settings.png', 'MP4 の書き出し設定']
+            ].map(([path, title]) => {
+              const png = fs.readFileSync(path);
+              if (png.length < 24 || png.length > 2 * 1024 * 1024 ||
+                  png.subarray(0, 8).toString('hex') !== '89504e470d0a1a0a' ||
+                  png.subarray(12, 16).toString('ascii') !== 'IHDR') {
+                throw new Error(`Expected a Windows screenshot PNG of at most 2 MiB: ${path}`);
+              }
+              return { path, title, png };
+            });
 
             const branch = `ci/screenshots/pr-${number}`;
             let ref;
@@ -145,35 +166,46 @@ jobs:
               ({ data: ref } = await github.rest.git.getRef({ owner, repo, ref: `heads/${branch}` }));
             } catch (error) {
               if (error.status !== 404) throw error;
-              ({ data: ref } = await github.rest.git.createRef({
-                owner, repo, ref: `refs/heads/${branch}`, sha: event.base.sha
-              }));
             }
-
-            let previous;
-            try {
-              ({ data: previous } = await github.rest.repos.getContent({ owner, repo, path, ref: branch }));
-            } catch (error) {
-              if (error.status !== 404) throw error;
-            }
-
-            const content = png.toString('base64');
-            let imageCommit = ref.object.sha;
-            if (previous?.content?.replace(/\s/g, '') !== content) {
-              const { data: result } = await github.rest.repos.createOrUpdateFileContents({
-                owner, repo, path, branch, content, sha: previous?.sha,
-                message: `Update Windows screenshot for PR #${number}`
+            let imageCommit = ref?.object.sha ?? event.base.sha;
+            const { data: parent } = await github.rest.git.getCommit({
+              owner, repo, commit_sha: imageCommit
+            });
+            const files = await Promise.all(screenshots.map(async ({ path, png }) => {
+              const { data: blob } = await github.rest.git.createBlob({
+                owner, repo, content: png.toString('base64'), encoding: 'base64'
               });
-              imageCommit = result.commit.sha;
+              return { path, mode: '100644', type: 'blob', sha: blob.sha };
+            }));
+            const { data: tree } = await github.rest.git.createTree({
+              owner, repo, base_tree: parent.tree.sha, tree: files
+            });
+            if (tree.sha !== parent.tree.sha || !ref) {
+              const { data: commit } = await github.rest.git.createCommit({
+                owner, repo, tree: tree.sha, parents: [imageCommit],
+                message: `Update Windows screenshots for PR #${number}`
+              });
+              imageCommit = commit.sha;
+              if (ref) {
+                await github.rest.git.updateRef({
+                  owner, repo, ref: `heads/${branch}`, sha: imageCommit, force: false
+                });
+              } else {
+                await github.rest.git.createRef({
+                  owner, repo, ref: `refs/heads/${branch}`, sha: imageCommit
+                });
+              }
             }
 
             const marker = '<!-- meditor-windows-screenshot -->';
-            const image = `https://raw.githubusercontent.com/${owner}/${repo}/${imageCommit}/${path}`;
             const run = `${process.env.GITHUB_SERVER_URL}/${owner}/${repo}/actions/runs/${context.runId}`;
             const body = [
               marker,
-              '### Windows プレビュー（Rust）',
-              `![Windows で撮影した meditor の画面](${image})`,
+              '### Windows の機能別スクリーンショット',
+              ...screenshots.map(({ path, title }) => {
+                const image = `https://raw.githubusercontent.com/${owner}/${repo}/${imageCommit}/${path}`;
+                return `#### ${title}\n\n![${title}のスクリーンショット](${image})`;
+              }),
               `字幕10,000件・音声3トラックの合成プロジェクト · [実行結果](${run}) · \`${event.head.sha.slice(0, 7)}\``
             ].join('\n\n');
             const comments = await github.paginate(github.rest.issues.listComments, {
@@ -182,6 +214,7 @@ jobs:
             const comment = comments.find(item =>
               item.user?.login === 'github-actions[bot]' && item.body?.startsWith(marker)
             );
+            if (!await isCurrentHead()) return;
             if (comment) {
               await github.rest.issues.updateComment({ owner, repo, comment_id: comment.id, body });
             } else {

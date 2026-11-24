@@ -3,6 +3,7 @@
 #![forbid(unsafe_code)]
 pub mod ai;
 pub mod project;
+pub mod subtitle_style;
 
 pub mod history;
 pub mod transcription;

@@ -5,7 +5,7 @@
 | 日本語字幕10,000件と2本以上の音声がある | JSON を開き、字幕本文を変えて保存する | 全字幕と話者、音声オフセットを保持し、本文だけ更新する | `project_acceptance` |
 | 開始時刻の異なる字幕と同時刻の字幕がある | プロジェクトを保存して開く | 開始時刻順に並び、同時刻の順序と字幕の各項目を保持する | `project_acceptance` |
 | BOM と CRLF を含む UTF-8 SRT がある | SRT を取り込む | 字幕の時刻、改行、本文を読み込む | `project_acceptance` |
-| 同時刻に複数の字幕がある | 字幕の開始と終了の境界へシークする | 表示したフレームの時刻に対応する字幕を話者名付きで表示し、終了した字幕は消える | [Rust の字幕表示テスト](../rust/src/caption_overlay.rs) |
+| 同時刻に複数の字幕がある | 字幕の開始と終了の境界へシークする | 表示したフレームの時刻に対応する字幕本文を表示し、終了した字幕は消える | [Rust の字幕表示テスト](../rust/src/caption_overlay.rs) |
 | 素材区間を持つプロジェクトがある | 素材区間の開始と終了付近をシークする | 対象位置を含むフレームを選び、半開区間の終端以降のフレームを表示しない | Rust のデコードテスト |
 | ゲーム音と話者2本で時刻差とゲインがある | 最初の PCM ブロックをミックスする | オフセットとゲインを各トラックに適用する | Rust の音声テスト |
 | 元動画を開いている | 同じスクラブ世代で異なる位置を連続要求する | 最新の位置を採用する | `--smoke-test` |
@@ -18,9 +18,17 @@
 
 ## PR で Windows の画面を確認する
 
-同じリポジトリのブランチから作成した PR では、CI が **Windows プレビュー** コメントに PNG を直接表示します。再実行すると同じコメントが更新されます。PNG はコメントから表示できるよう、専用の `ci/screenshots/pr-番号` ブランチに保存します。フォークからの PR では画像投稿用の書き込み権限がないため、**Checks → Windows tests and screenshot → Details** から実行を開き、Artifacts の画像を確認できます。
+同じリポジトリのブランチから作成した PR では、CI が **Windows の機能別スクリーンショット** コメントに画像を直接表示する。編集画面、字幕スタイルを適用したプレビュー、字幕スタイル設定、AI 編集、MP4 書き出し設定の5枚を撮影する。再実行すると同じコメントが更新される。PNG は専用の `ci/screenshots/pr-番号` ブランチに保存する。フォークからの PR では **Checks → Windows tests and screenshot → Details** から実行を開き、Artifacts で画像を確認できる。
 
-Windows ジョブは MSVC と SHA-256 で検証した FFmpeg 共有 SDK で Rust 版をビルドし、受入テストと GUI のスモークテストを実行します。GUI は元動画を再生し、プロキシの最新シークを採用し、音声付きで元動画に戻れたところで Slint のウィンドウ内容を PNG に保存します。音声機器は SDL のダミーデバイスを使用します。
+Windows ジョブは MSVC と SHA-256 で検証した FFmpeg 共有 SDK で Rust 版をビルドし、受入テストと GUI のスモークテストを実行する。GUI は元動画を再生し、プロキシの最新シークを採用し、音声付きで元動画に戻れたところで画面を順番に切り替えて PNG に保存する。AI 編集画面の入力は表示用で、Codex には送信しない。
+
+同じ画面をローカルで撮る場合は、合成プロジェクトと保存先ディレクトリを指定する。
+
+```powershell
+$env:SDL_AUDIODRIVER = 'dummy'
+cargo run --manifest-path rust/Cargo.toml --locked --release --bin meditor-fixture -- artifacts/fixture
+cargo run --manifest-path rust/Cargo.toml --locked --release --bin meditor -- --feature-screenshots artifacts/fixture/fixture.json artifacts/screenshots
+```
 
 ## Rust のシーク制御
 
