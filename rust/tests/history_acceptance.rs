@@ -555,9 +555,20 @@ fn trace_clip(value: i32) -> Result<Option<ClipRange>> {
 
 #[test]
 fn replay_quint_edit_history_trace() -> Result<()> {
-    let trace: HistoryTrace = serde_json::from_str(include_str!(
+    replay_history_trace(include_str!(
         "../../verification/quint/traces/edit_history.itf.json"
-    ))?;
+    ))
+}
+
+#[test]
+fn replay_quint_full_edit_history_trace() -> Result<()> {
+    replay_history_trace(include_str!(
+        "../../verification/quint/traces/edit_history_full.itf.json"
+    ))
+}
+
+fn replay_history_trace(json: &str) -> Result<()> {
+    let trace: HistoryTrace = serde_json::from_str(json)?;
     assert!(trace.states.len() > 1);
     let mut project = project()?;
     let mut history = EditHistory::default();
@@ -682,12 +693,15 @@ proptest::proptest! {
 
         let mut original = project().map_err(test_error)?;
         let mut history = EditHistory::default();
+        let mut project_to_save = project().map_err(test_error)?;
+        let mut history_to_save = EditHistory::default();
         for operation in prefix {
             operation.apply(&mut original, &mut history).map_err(test_error)?;
+            operation.apply(&mut project_to_save, &mut history_to_save).map_err(test_error)?;
         }
         let folder = tempfile::tempdir()?;
         let path = folder.path().join("project.json");
-        original.save_with_history(&path, &history).map_err(test_error)?;
+        project_to_save.save_with_history(&path, &history_to_save).map_err(test_error)?;
         let mut reopened = Project::load(&path).map_err(test_error)?;
         let mut restored = reopened.take_edit_history(DURATION).map_err(test_error)?;
         prop_assert_eq!(observe_history(&original, &history), observe_history(&reopened, &restored));
