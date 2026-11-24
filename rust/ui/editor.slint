@@ -93,6 +93,9 @@ export component EditorWindow inherits Window {
     callback ai-cancel();
     callback ai-caption-edit();
 
+    public function history-undo-enabled() -> bool { return undo-button.enabled; }
+    public function history-redo-enabled() -> bool { return redo-button.enabled; }
+
     public function show-screenshot-panel(panel: ScreenshotPanel) {
         subtitle-style-settings.close();
         export-settings.close();
@@ -110,8 +113,8 @@ export component EditorWindow inherits Window {
             Button { text: "新規"; clicked => { root.new-project(); } }
             Button { text: "開く"; clicked => { root.open-project(); } }
             Button { text: "保存"; enabled: root.has-project; clicked => { root.save-project(); } }
-            Button { text: "元に戻す"; enabled: root.can-undo; clicked => { root.undo-edit(); } }
-            Button { text: "やり直す"; enabled: root.can-redo; clicked => { root.redo-edit(); } }
+            undo-button := Button { text: "元に戻す"; enabled: root.can-undo; clicked => { root.undo-edit(); } }
+            redo-button := Button { text: "やり直す"; enabled: root.can-redo; clicked => { root.redo-edit(); } }
             Button { text: "SRT 読込"; enabled: root.has-project; clicked => { root.import-captions(); } }
             Button { text: "プロキシを選択"; enabled: root.has-project; clicked => { root.choose-proxy(); } }
             Button {

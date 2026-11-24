@@ -1,6 +1,7 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod export;
+mod history_report;
 
 mod audio;
 mod caption_overlay;
@@ -1407,6 +1408,7 @@ fn bind(ui: &EditorWindow, state: &Rc<RefCell<Editor>>) {
 struct Launch {
     project: Option<PathBuf>,
     smoke: Option<Smoke>,
+    history_report: Option<PathBuf>,
 }
 
 fn capture_window(ui: &EditorWindow, path: &std::path::Path) -> Result<()> {
@@ -1436,9 +1438,24 @@ fn arguments(mut args: impl Iterator<Item = OsString>) -> Result<Launch> {
         return Ok(Launch {
             project: None,
             smoke: None,
+            history_report: None,
         });
     };
-    let launch = if first == "--smoke-test" || first == "--feature-screenshots" {
+    let launch = if first == "--history-bdd-report" {
+        Launch {
+            project: Some(
+                args.next()
+                    .context("合成プロジェクトを指定してください")?
+                    .into(),
+            ),
+            smoke: None,
+            history_report: Some(
+                args.next()
+                    .context("レポートの保存フォルダーを指定してください")?
+                    .into(),
+            ),
+        }
+    } else if first == "--smoke-test" || first == "--feature-screenshots" {
         let project = args.next().context("合成プロジェクトを指定してください")?;
         let screenshots = if first == "--feature-screenshots" {
             Some(ScreenshotOutput::Features(
@@ -1457,16 +1474,18 @@ fn arguments(mut args: impl Iterator<Item = OsString>) -> Result<Launch> {
                 deadline: Instant::now() + Duration::from_secs(45),
                 phase: SmokePhase::FirstFrame,
             }),
+            history_report: None,
         }
     } else {
         Launch {
             project: Some(first.into()),
             smoke: None,
+            history_report: None,
         }
     };
     ensure!(
         args.next().is_none(),
-        "meditor [PROJECT] | --smoke-test PROJECT [PNG] | --feature-screenshots PROJECT DIRECTORY"
+        "meditor [PROJECT] | --smoke-test PROJECT [PNG] | --feature-screenshots PROJECT DIRECTORY | --history-bdd-report PROJECT DIRECTORY"
     );
     Ok(launch)
 }
@@ -1484,6 +1503,10 @@ fn main() -> Result<()> {
         smoke: launch.smoke,
         ..Editor::default()
     }));
+    if let Some(directory) = launch.history_report {
+        bind(&ui, &state);
+        return history_report::run(&ui, &state, launch.project.unwrap(), directory);
+    }
     if let Some(path) = launch.project {
         let opened = Project::load(&path).and_then(|project| Loaded::open(project, path));
         match opened {

@@ -1,0 +1,155 @@
+name: Publish history BDD report
+
+on:
+  workflow_run:
+    workflows: [meditor]
+    types: [completed]
+
+permissions: {}
+
+concurrency:
+  group: meditor-history-pages
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  prepare:
+    if: >-
+      github.event.workflow_run.event == 'pull_request'
+      && github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: write
+      pull-requests: read
+    outputs:
+      pr: ${{ steps.report.outputs.pr }}
+      sha: ${{ steps.report.outputs.sha }}
+      path: ${{ steps.build.outputs.path }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RUN_ID: ${{ github.event.workflow_run.id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Find the current PR run's report
+        id: report
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const run = context.payload.workflow_run;
+            const { data: { artifacts } } = await github.rest.actions.listWorkflowRunArtifacts({
+              owner, repo, run_id: run.id, name: 'meditor-history-report',
+            });
+            if (artifacts.length === 0) return;
+            if (artifacts.length !== 1 || artifacts[0].expired || artifacts[0].size_in_bytes > 16 * 1024 * 1024) {
+              throw new Error('Expected one current history report of at most 16 MiB');
+            }
+            const { data: pulls } = await github.rest.pulls.list({
+              owner, repo, state: 'open', head: `${owner}:${run.head_branch}`, per_page: 100,
+            });
+            const matches = pulls.filter(pr =>
+              pr.head.sha === run.head_sha && pr.head.repo?.id === run.head_repository.id
+            );
+            if (matches.length !== 1) return;
+            core.setOutput('pr', matches[0].number);
+            core.setOutput('sha', run.head_sha);
+            core.setOutput('artifact', artifacts[0].id);
+      - name: Build the report from CI data
+        if: steps.report.outputs.pr != ''
+        id: build
+        env:
+          PR: ${{ steps.report.outputs.pr }}
+          SHA: ${{ steps.report.outputs.sha }}
+          ARTIFACT: ${{ steps.report.outputs.artifact }}
+        run: |
+          branch=ci/history-reports
+          work="$RUNNER_TEMP/history-site"
+          zip="$RUNNER_TEMP/history-report.zip"
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT/zip" > "$zip"
+          git init --initial-branch="$branch" "$work"
+          git -C "$work" remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+          git -C "$work" config credential.helper '!gh auth git-credential'
+          git -C "$work" config user.name 'github-actions[bot]'
+          git -C "$work" config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          if git -C "$work" ls-remote --exit-code --heads origin "refs/heads/$branch" >/dev/null; then
+            git -C "$work" pull --ff-only --depth=1 origin "$branch"
+          else
+            status=$?
+            test "$status" -eq 2
+          fi
+
+          mkdir -p "$work/bdd"
+          existing=$(find "$work/bdd" -mindepth 1 -maxdepth 1 -type d -name "pr-$PR-*")
+          if [ -n "$existing" ]; then
+            path=$(basename "$existing")
+            [[ "$path" =~ ^pr-${PR}-[0-9a-f]{32}$ ]]
+          else
+            path="pr-$PR-$(openssl rand -hex 16)"
+          fi
+          rm -rf "$work/bdd/$path"
+          python3 tools/render-history-report.py "$zip" "$work/bdd/$path" --pr "$PR" --sha "$SHA" --run "$RUN_ID"
+          printf '<!doctype html><meta charset="utf-8"><meta name="robots" content="noindex, nofollow, noarchive"><title>meditor</title>\n' > "$work/index.html"
+          if [ "$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" --jq '.state + " " + .head.sha')" != "open $SHA" ]; then
+            exit 0
+          fi
+          git -C "$work" add -- bdd index.html
+          if ! git -C "$work" diff --cached --quiet; then
+            git -C "$work" commit -m "Update history report for PR #$PR"
+            git -C "$work" push origin "HEAD:refs/heads/$branch"
+          fi
+          echo "path=bdd/$path" >> "$GITHUB_OUTPUT"
+      - name: Prepare the Pages artifact
+        if: steps.build.outputs.path != ''
+        run: |
+          mkdir "$RUNNER_TEMP/history-pages"
+          cp -R "$RUNNER_TEMP/history-site/bdd" "$RUNNER_TEMP/history-site/index.html" "$RUNNER_TEMP/history-pages/"
+      - uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
+        if: steps.build.outputs.path != ''
+        with:
+          path: ${{ runner.temp }}/history-pages
+
+  publish:
+    needs: prepare
+    if: needs.prepare.outputs.path != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      pages: write
+      id-token: write
+      pull-requests: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - name: Deploy the reports
+        id: deploy
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
+      - name: Link the report from the PR
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          PR: ${{ needs.prepare.outputs.pr }}
+          SHA: ${{ needs.prepare.outputs.sha }}
+          REPORT_PATH: ${{ needs.prepare.outputs.path }}
+          PAGES_URL: ${{ steps.deploy.outputs.page_url }}
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const issue_number = Number(process.env.PR);
+            const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: issue_number });
+            if (pr.state !== 'open' || pr.head.sha !== process.env.SHA) return;
+            const url = new URL(process.env.REPORT_PATH + '/', process.env.PAGES_URL.replace(/\/?$/, '/'));
+            const marker = '<!-- meditor-history-report -->';
+            const body = `${marker}\n[BDDレポートを開く](${url.href}) · Undo / Redo · \`${pr.head.sha.slice(0, 12)}\``;
+            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number });
+            const existing = comments.find(comment =>
+              comment.user?.login === 'github-actions[bot]' && comment.body?.startsWith(marker)
+            );
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }
