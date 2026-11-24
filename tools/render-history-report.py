@@ -144,7 +144,15 @@ h1, h2, h3 {{ line-height: 1.4; text-wrap: pretty }}
   margin: auto; max-width: 94rem; padding: clamp(1rem, 4vw, 3rem);
 }}
 .scenarios {{ align-self: start; position: sticky; top: 1.25rem }}
-.scenarios h2 {{ color: var(--muted); font-size: .92rem; margin-bottom: .65rem }}
+.scenarios summary {{
+  cursor: pointer; padding: .7rem .85rem; border: 1px solid var(--line); border-radius: .6rem;
+  background: #fff; color: var(--muted); font-weight: 650;
+}}
+.scenarios summary:focus-visible {{ outline: 3px solid var(--accent); outline-offset: 3px }}
+.scenarios details[open] summary {{ margin-bottom: .65rem }}
+.menu-state {{ margin-left: .35rem; font-size: .8rem; font-weight: 500 }}
+.menu-close, .scenarios details[open] .menu-open {{ display: none }}
+.scenarios details[open] .menu-close {{ display: inline }}
 .scenarios a {{
   display: block; padding: .85rem .95rem; margin-bottom: .5rem; border: 1px solid var(--line);
   border-radius: .6rem; background: #fff; color: inherit; text-decoration: none;
@@ -189,6 +197,9 @@ table {{ width: 100%; border-collapse: collapse; text-align: left; font-size: .9
 th, td {{ padding: .4rem .6rem; border-bottom: 1px solid var(--line); overflow-wrap: anywhere }}
 thead {{ background: #f3f6fb }}
 tbody tr:last-child th, tbody tr:last-child td {{ border-bottom: 0 }}
+@media (min-width: 721px) {{
+  .layout:has(.scenarios details:not([open])) {{ grid-template-columns: 11rem minmax(0, 1fr) }}
+}}
 @media (max-width: 720px) {{
   .layout {{ grid-template-columns: 1fr }}
   .scenarios {{ position: static }}
@@ -201,7 +212,9 @@ tbody tr:last-child th, tbody tr:last-child td {{ border-bottom: 0 }}
 <a href="https://github.com/keru-labo/meditor/pull/{pr}">PR #{pr}</a> · <code>{sha[:12]}</code> ·
 <a href="https://github.com/keru-labo/meditor/actions/runs/{run}">CIの実行結果</a></p></div></header>
 <div class="layout">
-<nav class="scenarios" aria-labelledby="scenarios-title"><h2 id="scenarios-title">シナリオ</h2>{"".join(links)}</nav>
+<nav class="scenarios" aria-labelledby="scenarios-title"><details open>
+<summary><span id="scenarios-title">シナリオ</span><span class="menu-state menu-open" aria-hidden="true">展開</span><span class="menu-state menu-close" aria-hidden="true">閉じる</span></summary>
+{"".join(links)}</details></nav>
 <main>{"".join(panels)}</main>
 </div>
 <script>
