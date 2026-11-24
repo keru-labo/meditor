@@ -59,7 +59,7 @@ jobs:
           test "$(grep -Fxc '            self.redo.clear();' "$history")" -eq 1
           sed -i '/^            self\.redo\.clear();$/d' "$history"
           cargo test --manifest-path "$mutation/rust/Cargo.toml" \
-            --target-dir "$GITHUB_WORKSPACE/rust/target" --locked --release \
+            --target-dir "$mutation/target" --locked --release \
             --test history_bdd -- --ignored --exact --nocapture history_bdd_detects_redo_regression \
             | tee "$mutation/history-bdd.log"
           grep -q '^DETECTED docs/features/edit-history.feature:' "$mutation/history-bdd.log"
