@@ -87,11 +87,7 @@ jobs:
           python="$RUNNER_TEMP/report-venv/bin/python"
           "$python" -m pip install --require-hashes --only-binary=:all: -r tools/docs-check-requirements.txt
           "$python" -m unittest discover -s tools -p 'test_*report*.py'
-          (
-            cd artifacts/bdd-catalogue
-            mapfile -d '' features < <(find docs/features -type f -name '*.feature' -print0)
-            "$python" -m zipfile -c ../bdd-catalogue.zip "${features[@]}"
-          )
+          (cd artifacts/bdd-catalogue && "$python" -m zipfile -c ../bdd-catalogue.zip docs)
           evidence=()
           if [ -f artifacts/history-report/report.json ]; then
             (cd artifacts/history-report && "$python" -m zipfile -c ../history-report.zip report.json ./*.png)
