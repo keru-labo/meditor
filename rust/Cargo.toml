@@ -16,7 +16,7 @@ hound = "=3.5.1"
 image = { version = "=0.25.10", default-features = false, features = ["png"] }
 pathdiff = "=0.2.3"
 regex = "=1.13.2"
-rfd = { version = "=0.16.1", default-features = false, features = ["xdg-portal", "async-std"] }
+rfd = { version = "=0.16.1", default-features = false, features = ["xdg-portal", "async-std", "wayland"] }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = { version = "=1.0.154", features = ["raw_value"] }
 slint = { version = "=1.15.1", default-features = false, features = ["backend-winit", "renderer-software", "compat-1-2", "accessibility"] }
