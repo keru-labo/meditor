@@ -30,6 +30,8 @@ cargo test --manifest-path rust/Cargo.toml --locked --test history_bdd -- --noca
 
 同じリポジトリ内の PR では、Linux CI が合成プロジェクトを使って Undo / Redo の2シナリオをエディターで実行する。Slint の編集コールバックを呼び、実際のボタンの有効・無効、字幕一覧、素材区間を照合する。各操作後の画面を保存し、値が期待と違う場合もその時点の画面を記録する。
 
+マージ前は、PR コメントの「BDDレビュー用レポートを開く」から、GitHub 上で確認結果と画像を閲覧できる。同じコメントに HTML 版の ZIP も載せる。
+
 PR コメントの「BDDレポートを開く」から、シナリオ、操作、確認点、期待値、実際の値、スクリーンショットを確認できる。失敗したシナリオを先に表示する。同じ PR の URL は維持し、現在のコミットの結果で更新する。
 
 公開は既定ブランチ上のワークフローが行う。GitHub Pages の Source は GitHub Actions を使う。レポートの一覧ページは設けず、各ページに `noindex` を設定する。公開 PR や共有された URL からはログインなしで閲覧できる。 [公開ワークフロー](../../.github/workflows/history-report.yml)

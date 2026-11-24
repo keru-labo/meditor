@@ -20,6 +20,8 @@ jobs:
     runs-on: ubuntu-latest
     container: debian:trixie
     timeout-minutes: 25
+    outputs:
+      history-preview: ${{ steps.history-preview.outputs.artifact-id }}
     env:
       # This lane checks correctness. Windows still uses the default release profile.
       CARGO_PROFILE_RELEASE_OPT_LEVEL: '1'
@@ -70,8 +72,17 @@ jobs:
         run: |
           (cd artifacts/history-report && python3 -m zipfile -c ../history-report.zip report.json ./*.png)
           python3 tools/render-history-report.py artifacts/history-report.zip artifacts/history-report-preview \
-            --pr "$PR" --sha "$HEAD_SHA" --run "$GITHUB_RUN_ID"
+            --pr "$PR" --sha "$HEAD_SHA" --run "$GITHUB_RUN_ID" --review-markdown
           test -s artifacts/history-report-preview/index.html
+      - name: Upload the browser-ready HTML preview
+        id: history-preview
+        if: ${{ !cancelled() && hashFiles('artifacts/history-report-preview/index.html') != '' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: meditor-history-report-preview
+          path: artifacts/history-report-preview/
+          if-no-files-found: error
+          retention-days: 14
       - name: Verify the history BDD detects a known regression
         shell: bash
         run: |
@@ -262,4 +273,88 @@ jobs:
               await github.rest.issues.updateComment({ owner, repo, comment_id: comment.id, body });
             } else {
               await github.rest.issues.createComment({ owner, repo, issue_number: number, body });
+            }
+
+  history-preview:
+    name: Link the history report for PR review
+    needs: linux
+    if: >-
+      !cancelled()
+      && needs.linux.outputs.history-preview != ''
+      && github.event_name == 'pull_request'
+      && github.event.pull_request.head.repo.full_name == github.repository
+      && github.actor != 'dependabot[bot]'
+      && github.event.pull_request.user.login != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: meditor-history-report-preview
+          path: preview
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          ARTIFACT: ${{ needs.linux.outputs.history-preview }}
+        with:
+          script: |
+            const fs = require('node:fs');
+            const { owner, repo } = context.repo;
+            const event = context.payload.pull_request;
+            const issue_number = event.number;
+            const isCurrentHead = async () => {
+              const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: issue_number });
+              return pr.state === 'open' && pr.head.sha === event.head.sha;
+            };
+            if (!await isCurrentHead()) return;
+
+            const names = fs.readdirSync('preview').filter(name => name !== 'index.html');
+            if (!names.includes('review.md') || names.length < 3 || names.length > 8 ||
+                names.some(name => !/^(review\.md|[12]-[1-4]\.png)$/.test(name))) {
+              throw new Error('Unexpected review preview files');
+            }
+            const tree = await Promise.all(names.map(async name => {
+              const content = fs.readFileSync('preview/' + name);
+              if (content.length > 2 * 1024 * 1024) throw new Error('Review preview file is too large');
+              const { data: blob } = await github.rest.git.createBlob({
+                owner, repo, content: content.toString('base64'), encoding: 'base64',
+              });
+              return { path: name, mode: '100644', type: 'blob', sha: blob.sha };
+            }));
+            const { data: nextTree } = await github.rest.git.createTree({ owner, repo, tree });
+            const branch = `heads/ci/history-preview/pr-${issue_number}`;
+            let previous;
+            try {
+              ({ data: previous } = await github.rest.git.getRef({ owner, repo, ref: branch }));
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+            const { data: commit } = await github.rest.git.createCommit({
+              owner, repo, tree: nextTree.sha, parents: previous ? [previous.object.sha] : [],
+              message: `Update the history review preview for PR #${issue_number}`,
+            });
+            if (!await isCurrentHead()) return;
+            if (previous) {
+              await github.rest.git.updateRef({ owner, repo, ref: branch, sha: commit.sha, force: false });
+            } else {
+              await github.rest.git.createRef({ owner, repo, ref: `refs/${branch}`, sha: commit.sha });
+            }
+
+            const root = `${process.env.GITHUB_SERVER_URL}/${owner}/${repo}`;
+            const marker = '<!-- meditor-history-review-preview -->';
+            const body = [
+              marker,
+              `[BDDレビュー用レポートを開く](${root}/blob/${commit.sha}/review.md)`,
+              `[HTML版（ZIP）](${root}/actions/runs/${context.runId}/artifacts/${process.env.ARTIFACT}) · \`${event.head.sha.slice(0, 12)}\``,
+            ].join('\n\n');
+            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number });
+            const existing = comments.find(comment =>
+              comment.user?.login === 'github-actions[bot]' && comment.body?.startsWith(marker)
+            );
+            if (!await isCurrentHead()) return;
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
             }

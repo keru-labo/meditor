@@ -133,6 +133,49 @@ selectScenario();
 """
 
 
+def render_review(results, pr, sha, run):
+    def cell(value):
+        return "".join(
+            f"&#{ord(character)};" if character in "<>&|\n\r\\`*_[]~!" else character
+            for character in value
+        )
+
+    scenarios = [
+        (not all(check["expected"] == check["actual"] for step in scenario["steps"]
+                 for check in step["checks"]), scenario)
+        for scenario in results
+    ]
+    lines = [
+        "# Undo / Redo の画面検査",
+        f"[PR #{pr}](https://github.com/keru-labo/meditor/pull/{pr}) · `{sha[:12]}` · "
+        f"[CIの実行結果](https://github.com/keru-labo/meditor/actions/runs/{run})",
+        "## シナリオ",
+        "",
+    ]
+    scenarios.sort(key=lambda scenario: not scenario[0])
+    for failed, scenario in scenarios:
+        status = "失敗" if failed else "成功"
+        lines.append(f"- {status} · {cell(scenario['name'])}")
+    for failed, scenario in scenarios:
+        status = "失敗" if failed else "成功"
+        lines.extend(["", f"## {status} · {cell(scenario['name'])}", ""])
+        for step in scenario["steps"]:
+            action = cell(step["action"])
+            lines.extend([
+                f"### {action}", "",
+                "| 確認点 | 期待 | 実際 | 結果 |",
+                "| --- | --- | --- | --- |",
+            ])
+            for check in step["checks"]:
+                result = "成功" if check["expected"] == check["actual"] else "失敗"
+                lines.append(
+                    f"| {cell(check['name'])} | {cell(check['expected'])} | "
+                    f"{cell(check['actual'])} | {result} |"
+                )
+            lines.extend(["", f"![{action}後の画面]({step['screenshot']})", ""])
+    return "\n".join(lines)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("zip", type=Path)
@@ -140,11 +183,17 @@ def main():
     parser.add_argument("--pr", type=int, required=True)
     parser.add_argument("--sha", required=True)
     parser.add_argument("--run", type=int, required=True)
+    parser.add_argument("--review-markdown", action="store_true")
     args = parser.parse_args()
     require(args.pr > 0 and args.run > 0 and re.fullmatch(r"[0-9a-f]{40}", args.sha), "Invalid CI metadata")
     args.output.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(args.zip) as archive:
         scenarios = read_report(archive, args.output)
+        if args.review_markdown:
+            results = json.loads(archive.read("report.json"))["scenarios"]
+            (args.output / "review.md").write_text(
+                render_review(results, args.pr, args.sha, args.run), encoding="utf-8"
+            )
     (args.output / "index.html").write_text(render(scenarios, args.pr, args.sha, args.run), encoding="utf-8")
 
 
