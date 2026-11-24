@@ -13,6 +13,10 @@ use std::{
 };
 
 const CAPTION: &str = "ボス戦";
+const OPEN_SAMPLE: &str = "合成プロジェクトを開く";
+const ENTER_CLIP_RANGE: &str = "開始に「0」、終了に「9」を入力して「区間を適用」を押す";
+const EDIT_FIRST_CAPTION: &str = "字幕一覧の先頭行を選び、本文を「ボス戦」に書き換える";
+const UNDO: &str = "ツールバーの「元に戻す」を押す";
 const ORIGINAL_RANGE: &str = "0.000000 – 60.000000 秒";
 const EDITED_RANGE: &str = "0.000000 – 9.000000 秒";
 const ENABLED: &str = "有効";
@@ -36,6 +40,7 @@ struct Scenario {
 #[derive(Serialize)]
 struct Step {
     action: &'static str,
+    operations: &'static [&'static str],
     checks: Vec<Check>,
     screenshot: String,
 }
@@ -100,13 +105,14 @@ fn perform(
     destination: &Path,
     scenario: usize,
     step: usize,
-) -> Result<(&'static str, Vec<Check>)> {
-    let report = match (scenario, step) {
+) -> Result<Step> {
+    let (action, operations, checks): (_, &[_], _) = match (scenario, step) {
         (0, 0) => {
             open_project(ui, editor, source, destination)?;
             edit_clip(ui);
             (
-                "合成プロジェクトを開き、素材区間を変更する",
+                "素材区間を0〜9秒に変更する",
+                &[OPEN_SAMPLE, ENTER_CLIP_RANGE],
                 vec![check("素材区間", EDITED_RANGE, clip(ui))],
             )
         }
@@ -114,6 +120,7 @@ fn perform(
             ui.invoke_undo_edit();
             (
                 "区間変更を元に戻す",
+                &[UNDO],
                 vec![
                     check("素材区間", ORIGINAL_RANGE, clip(ui)),
                     check(
@@ -127,7 +134,8 @@ fn perform(
         (0, 2) => {
             edit_caption(ui);
             (
-                "字幕本文を編集する",
+                "別の編集として字幕本文を変更する",
+                &[EDIT_FIRST_CAPTION],
                 vec![
                     check("字幕一覧の本文", CAPTION, caption(ui)),
                     check(
@@ -143,7 +151,8 @@ fn perform(
             edit_caption(ui);
             edit_clip(ui);
             (
-                "字幕を編集してから素材区間を変更する",
+                "字幕と素材区間を順に変更する",
+                &[OPEN_SAMPLE, EDIT_FIRST_CAPTION, ENTER_CLIP_RANGE],
                 vec![
                     check("字幕一覧の本文", CAPTION, caption(ui)),
                     check("素材区間", EDITED_RANGE, clip(ui)),
@@ -155,6 +164,7 @@ fn perform(
             ui.invoke_save_project();
             (
                 "区間変更だけを元に戻して保存する",
+                &[UNDO, "ツールバーの「保存」を押す"],
                 vec![
                     check("素材区間", ORIGINAL_RANGE, clip(ui)),
                     check(
@@ -169,6 +179,7 @@ fn perform(
             open_project(ui, editor, destination, destination)?;
             (
                 "保存したプロジェクトを開き直す",
+                &["直前に保存した fixture.json を再度開く"],
                 vec![
                     check("字幕一覧の本文", CAPTION, caption(ui)),
                     check("素材区間", ORIGINAL_RANGE, clip(ui)),
@@ -189,12 +200,18 @@ fn perform(
             ui.invoke_redo_edit();
             (
                 "区間変更をやり直す",
+                &["ツールバーの「やり直す」を押す"],
                 vec![check("素材区間", EDITED_RANGE, clip(ui))],
             )
         }
         _ => unreachable!(),
     };
-    Ok(report)
+    Ok(Step {
+        action,
+        operations,
+        checks,
+        screenshot: format!("{}-{}.png", scenario + 1, step + 1),
+    })
 }
 
 pub(super) fn run(
@@ -266,26 +283,21 @@ pub(super) fn run(
                     }
                     return Ok(false);
                 }
-                let (action, checks) = perform(&ui, &editor, &source, &destination, scenario, step)
+                let capture = perform(&ui, &editor, &source, &destination, scenario, step)
                     .unwrap_or_else(|error| {
                         eprintln!(
                             "{} の操作 {}: {error:#}",
                             SCENARIO_NAMES[scenario],
                             step + 1
                         );
-                        (
-                            "プロジェクトを開く",
-                            vec![check("プロジェクトの読み込み", "成功", "失敗")],
-                        )
+                        Step {
+                            action: "プロジェクトを開く",
+                            operations: &["シナリオで使うプロジェクトを読み込む"],
+                            checks: vec![check("プロジェクトの読み込み", "成功", "失敗")],
+                            screenshot: format!("{}-{}.png", scenario + 1, step + 1),
+                        }
                     });
-                pending = Some((
-                    Step {
-                        action,
-                        checks,
-                        screenshot: format!("{}-{}.png", scenario + 1, step + 1),
-                    },
-                    Instant::now() + Duration::from_millis(180),
-                ));
+                pending = Some((capture, Instant::now() + Duration::from_millis(180)));
                 Ok(false)
             })();
             match result {
