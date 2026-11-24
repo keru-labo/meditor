@@ -1,0 +1,19 @@
+{
+  "#meta": {
+    "format": "ITF",
+    "format-description": "https://apalache-mc.org/docs/adr/015adr-trace.html",
+    "source": "ChatEdit.qnt",
+    "status": "ok"
+  },
+  "vars": [
+    "state"
+  ],
+  "states": [
+    {"#meta":{"index":0},"state":{"beforePoll":{"caption":false,"clip":{"tag":"NoClip","value":{"#tup":[]}},"clipHistory":{"tag":"NoClipHistory","value":{"#tup":[]}},"source":false,"transcript":false},"draft":"original","edit":{"caption":false,"clip":{"tag":"NoClip","value":{"#tup":[]}},"clipHistory":{"tag":"NoClipHistory","value":{"#tup":[]}},"source":false,"transcript":false},"lastAction":"init","mustPreserveEdits":false,"reply":{"tag":"Waiting","value":{"#tup":[]}},"request":{"tag":"Idle","value":{"#tup":[]}},"submittedDraft":"original"}},
+    {"#meta":{"index":1},"state":{"beforePoll":{"caption":false,"clip":{"tag":"NoClip","value":{"#tup":[]}},"clipHistory":{"tag":"NoClipHistory","value":{"#tup":[]}},"source":false,"transcript":false},"draft":"original","edit":{"caption":false,"clip":{"tag":"NoClip","value":{"#tup":[]}},"clipHistory":{"tag":"NoClipHistory","value":{"#tup":[]}},"source":false,"transcript":false},"lastAction":"submit","mustPreserveEdits":false,"reply":{"tag":"Waiting","value":{"#tup":[]}},"request":{"tag":"Pending","value":{"#tup":[]}},"submittedDraft":"original"}},
+    {"#meta":{"index":2},"state":{"beforePoll":{"caption":false,"clip":{"tag":"NoClip","value":{"#tup":[]}},"clipHistory":{"tag":"NoClipHistory","value":{"#tup":[]}},"source":false,"transcript":false},"draft":"original","edit":{"caption":false,"clip":{"tag":"NoClip","value":{"#tup":[]}},"clipHistory":{"tag":"NoClipHistory","value":{"#tup":[]}},"source":false,"transcript":false},"lastAction":"cancel","mustPreserveEdits":false,"reply":{"tag":"Waiting","value":{"#tup":[]}},"request":{"tag":"Cancelled","value":{"#tup":[]}},"submittedDraft":"original"}},
+    {"#meta":{"index":3},"state":{"beforePoll":{"caption":false,"clip":{"tag":"NoClip","value":{"#tup":[]}},"clipHistory":{"tag":"NoClipHistory","value":{"#tup":[]}},"source":false,"transcript":false},"draft":"original","edit":{"caption":true,"clip":{"tag":"NoClip","value":{"#tup":[]}},"clipHistory":{"tag":"NoClipHistory","value":{"#tup":[]}},"source":false,"transcript":false},"lastAction":"editCaption","mustPreserveEdits":false,"reply":{"tag":"Waiting","value":{"#tup":[]}},"request":{"tag":"Cancelled","value":{"#tup":[]}},"submittedDraft":"original"}},
+    {"#meta":{"index":4},"state":{"beforePoll":{"caption":false,"clip":{"tag":"NoClip","value":{"#tup":[]}},"clipHistory":{"tag":"NoClipHistory","value":{"#tup":[]}},"source":false,"transcript":false},"draft":"original","edit":{"caption":true,"clip":{"tag":"NoClip","value":{"#tup":[]}},"clipHistory":{"tag":"NoClipHistory","value":{"#tup":[]}},"source":false,"transcript":false},"lastAction":"arrive","mustPreserveEdits":false,"reply":{"tag":"SelectedClip","value":{"#tup":[]}},"request":{"tag":"Cancelled","value":{"#tup":[]}},"submittedDraft":"original"}},
+    {"#meta":{"index":5},"state":{"beforePoll":{"caption":true,"clip":{"tag":"NoClip","value":{"#tup":[]}},"clipHistory":{"tag":"NoClipHistory","value":{"#tup":[]}},"source":false,"transcript":false},"draft":"original","edit":{"caption":true,"clip":{"tag":"NoClip","value":{"#tup":[]}},"clipHistory":{"tag":"NoClipHistory","value":{"#tup":[]}},"source":false,"transcript":false},"lastAction":"poll","mustPreserveEdits":true,"reply":{"tag":"Waiting","value":{"#tup":[]}},"request":{"tag":"Idle","value":{"#tup":[]}},"submittedDraft":"original"}}
+  ]
+}
