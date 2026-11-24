@@ -516,6 +516,7 @@ struct HistoryTraceStep {
 struct HistoryTraceState {
     command: HistoryTraceCommand,
     result: String,
+    before: HistoryTraceTimeline,
     after: HistoryTraceTimeline,
 }
 
@@ -535,6 +536,23 @@ struct HistoryTraceTimeline {
 struct HistoryTraceSnapshot {
     caption: ItfInt,
     clip: ItfInt,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ObservedTarget {
+    Caption(usize),
+    Clip,
+    SubtitleStyle,
+}
+
+impl From<EditTarget> for ObservedTarget {
+    fn from(target: EditTarget) -> Self {
+        match target {
+            EditTarget::Caption(row) => Self::Caption(row),
+            EditTarget::Clip => Self::Clip,
+            EditTarget::SubtitleStyle => Self::SubtitleStyle,
+        }
+    }
 }
 
 fn trace_caption(value: i32) -> Result<(&'static str, &'static str)> {
@@ -590,7 +608,7 @@ fn replay_quint_edit_history_trace() -> Result<()> {
             "redo" => history.redo(&mut project, DURATION),
             _ => anyhow::bail!("unknown operation at {message}"),
         };
-        let result = match actual {
+        let result = match &actual {
             Ok(Some(_)) => "changed",
             Ok(None) => "unchanged",
             Err(_) => "error",
@@ -598,6 +616,17 @@ fn replay_quint_edit_history_trace() -> Result<()> {
         assert_eq!(result, state.result, "{message}");
         let cursor = usize::try_from(state.after.cursor.value()?)?;
         let snapshot = &state.after.snapshots[cursor];
+        if let Ok(Some(target)) = actual {
+            let previous = &state.before.snapshots[usize::try_from(state.before.cursor.value()?)?];
+            let caption_changed = previous.caption.value()? != snapshot.caption.value()?;
+            let clip_changed = previous.clip.value()? != snapshot.clip.value()?;
+            let expected = match (caption_changed, clip_changed) {
+                (true, false) => ObservedTarget::Caption(0),
+                (false, true) => ObservedTarget::Clip,
+                _ => anyhow::bail!("expected exactly one changed field at {message}"),
+            };
+            assert_eq!(ObservedTarget::from(target), expected, "{message}");
+        }
         let (speaker, text) = trace_caption(snapshot.caption.value()?)?;
         assert_eq!(project.captions[0].speaker, speaker, "{message}");
         assert_eq!(project.captions[0].text, text, "{message}");
@@ -693,7 +722,10 @@ proptest::proptest! {
         {
             let expected = operation.apply(&mut original, &mut history).map_err(test_error)?;
             let actual = operation.apply(&mut reopened, &mut restored).map_err(test_error)?;
-            prop_assert_eq!(actual.is_some(), expected.is_some(), "after {:?}", operation);
+            prop_assert_eq!(
+                actual.map(ObservedTarget::from), expected.map(ObservedTarget::from),
+                "after {:?}", operation
+            );
             prop_assert_eq!(
                 observe_history(&original, &history), observe_history(&reopened, &restored),
                 "after {:?}", operation
