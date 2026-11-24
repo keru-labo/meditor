@@ -49,6 +49,19 @@ jobs:
           for name in editor subtitle-style subtitle-preview ai-edit export-settings; do
             test -s "artifacts/feature-screenshots/$name.png"
           done
+      - name: Capture the Undo/Redo scenarios
+        if: github.event_name == 'pull_request'
+        env:
+          SDL_AUDIODRIVER: dummy
+        run: xvfb-run -a timeout 50s rust/target/release/meditor --history-bdd-report artifacts/fixture/fixture.json artifacts/history-report
+      - name: Upload the Undo/Redo results
+        if: ${{ !cancelled() && hashFiles('artifacts/history-report/report.json') != '' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: meditor-history-report
+          path: artifacts/history-report/
+          if-no-files-found: error
+          retention-days: 14
       - name: Verify the history BDD detects a known regression
         shell: bash
         run: |
