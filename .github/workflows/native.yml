@@ -49,6 +49,26 @@ jobs:
           for name in editor subtitle-style subtitle-preview ai-edit export-settings; do
             test -s "artifacts/feature-screenshots/$name.png"
           done
+      - name: Verify the history BDD detects a known regression
+        shell: bash
+        run: |
+          mutation=$(mktemp -d "$RUNNER_TEMP/history-mutation.XXXXXX")
+          trap 'rm -rf "$mutation"' EXIT
+          tar --exclude=rust/target -cf - rust docs/features/edit-history.feature | tar -xf - -C "$mutation"
+          history="$mutation/rust/src/history.rs"
+          if [ "$(grep -Fxc '            self.redo.clear();' "$history")" -ne 1 ]; then
+            echo "::error::Could not locate one redo-clearing statement"
+            exit 1
+          fi
+          sed -i '/^            self\.redo\.clear();$/d' "$history"
+          cargo test --manifest-path "$mutation/rust/Cargo.toml" \
+            --target-dir "$mutation/target" --locked --release \
+            --test history_bdd -- --ignored --exact --nocapture history_bdd_detects_redo_regression \
+            | tee "$mutation/history-bdd.log"
+          if ! grep -q '^DETECTED docs/features/edit-history.feature:' "$mutation/history-bdd.log"; then
+            echo "::error::The history BDD did not report the redo regression"
+            exit 1
+          fi
 
   windows:
     name: Windows tests and screenshot
