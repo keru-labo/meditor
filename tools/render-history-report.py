@@ -223,7 +223,7 @@ def render(catalogue, evidence, pr, sha, run):
                 if tag.startswith("@report-")
             ]
             related_links = "".join(
-                f"<p class='source'><a href='#scenario-{case_id}'>関連するUI検査 · "
+                f"<p class='source'><a class='related-case' href='#scenario-{case_id}'>関連するUI検査 · "
                 f"{html.escape(EDITOR_CASES[case_id][0])}</a></p>"
                 for case_id in related if case_id in EDITOR_CASES and case_id in evidence
             )
@@ -481,11 +481,12 @@ drawer.addEventListener('close', () => {{
   trigger.setAttribute('aria-expanded', 'false');
   if (!document.activeElement.closest('main')) trigger.focus({{preventScroll: true}});
 }});
-for (const link of links) link.addEventListener('click', event => {{
+const relatedLinks = document.querySelectorAll('main .related-case');
+for (const link of [...links, ...relatedLinks]) link.addEventListener('click', event => {{
   if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
   event.preventDefault();
   const target = document.getElementById(link.hash.slice(1));
-  drawer.close();
+  if (drawer.open) drawer.close();
   if (location.hash !== link.hash) location.hash = link.hash;
   selectScenario();
   target.querySelector('h2').focus({{preventScroll: true}});
