@@ -89,7 +89,7 @@ const CLIP_CAPTURES: [Binding; 2] = [
                 ),
                 (
                     StepType::Then,
-                    "タイムライン時刻 1 秒では動画とゲーム音の素材時刻 33 秒および話者音声の素材時刻 31 秒が同期する",
+                    "タイムライン時刻 1 秒で動画とゲーム音の素材時刻 33 秒および話者音声の素材時刻 31 秒が同期して再生される",
                 ),
             ],
             &[
@@ -330,6 +330,17 @@ fn bind_steps(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn all_screen_bindings_match_the_authored_cases() -> Result<()> {
+        let cases = load()?;
+        assert_eq!(cases.len(), 9);
+        assert_eq!(
+            cases.iter().map(|case| case.stages.len()).sum::<usize>(),
+            23
+        );
+        Ok(())
+    }
 
     #[test]
     fn titles_and_authored_keywords_come_from_gherkin() -> Result<()> {
