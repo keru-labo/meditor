@@ -1,6 +1,7 @@
 import { AboutSlint, Button, CheckBox, LineEdit, ListView, TextEdit } from "std-widgets.slint";
 import { ExportSelection, ExportSettings } from "export-settings.slint";
 import { SubtitleStyleDraft, SubtitleStyleSettings } from "subtitle-style-settings.slint";
+import { UiReportGeometry, UiReportPoint } from "report-point.slint";
 
 export struct CaptionAppearance {
     font-family: string,
@@ -96,6 +97,71 @@ export component EditorWindow inherits Window {
     public function history-undo-enabled() -> bool { return undo-button.enabled; }
     public function history-redo-enabled() -> bool { return redo-button.enabled; }
 
+    public function report-target(name: string) -> UiReportPoint {
+        let ai-row = root.height / 1px - (root.ai-status == "" ? 84 : 107);
+        if name == "ai-prompt" { return { x: 100, y: ai-row - 52 }; }
+        if name == "ai-send" { return { x: 49, y: ai-row }; }
+        if name == "ai-cancel" { return { x: 105, y: ai-row }; }
+        if name == "ai-export" { return { x: 197, y: ai-row }; }
+        if name == "style-fill" { return { x: root.width / 2 / 1px + 50, y: root.height / 2 / 1px - 28 }; }
+        if name == "style-outline" { return { x: root.width / 2 / 1px + 50, y: root.height / 2 / 1px + 11 }; }
+        if name == "style-thickness" { return { x: root.width / 2 / 1px + 50, y: root.height / 2 / 1px + 51 }; }
+        if name == "style-apply" { return { x: root.width / 2 / 1px + 135, y: root.height / 2 / 1px + 122 }; }
+        if name == "style-cancel" { return { x: root.width / 2 / 1px + 67, y: root.height / 2 / 1px + 122 }; }
+        if name == "about-close" { return { x: root.width / 2 / 1px, y: root.height / 2 / 1px + 68 }; }
+        if name == "leave-cancel" { return { x: root.width / 2 / 1px - 120, y: root.height / 2 / 1px + 25 }; }
+        if name == "leave-discard" { return { x: root.width / 2 / 1px - 15, y: root.height / 2 / 1px + 25 }; }
+        if name == "leave-save" { return { x: root.width / 2 / 1px + 112, y: root.height / 2 / 1px + 25 }; }
+        if name == "export-quality" { return { x: root.width / 2 / 1px, y: root.height / 2 / 1px - 21 }; }
+        if name == "export-canvas" { return { x: root.width / 2 / 1px, y: root.height / 2 / 1px + 45 }; }
+        if name == "export-save" { return { x: root.width / 2 / 1px + 115, y: root.height / 2 / 1px + 85 }; }
+        if name == "transcription" { return UiReportGeometry.center(transcription-button.absolute-position, transcription-button.width, transcription-button.height); }
+        if name == "export-cancel" { return { x: root.width / 2 / 1px + 6, y: root.height / 2 / 1px + 80 }; }
+        if name == "undo" { return UiReportGeometry.center(undo-button.absolute-position, undo-button.width, undo-button.height); }
+        if name == "redo" { return UiReportGeometry.center(redo-button.absolute-position, redo-button.width, redo-button.height); }
+        if name == "save" { return UiReportGeometry.center(save-button.absolute-position, save-button.width, save-button.height); }
+        if name == "open" { return UiReportGeometry.center(open-button.absolute-position, open-button.width, open-button.height); }
+        if name == "clip-start" { return UiReportGeometry.center(clip-start-field.absolute-position, clip-start-field.width, clip-start-field.height); }
+        if name == "clip-end" { return UiReportGeometry.center(clip-end-field.absolute-position, clip-end-field.width, clip-end-field.height); }
+        if name == "clip-apply" { return UiReportGeometry.center(clip-apply.absolute-position, clip-apply.width, clip-apply.height); }
+        if name == "caption-first" { return { x: (caption-list.absolute-position.x + caption-list.width / 2) / 1px, y: (caption-list.absolute-position.y + 19px) / 1px }; }
+        if name == "caption-body" { return { x: (caption-body.absolute-position.x + caption-body.width / 2) / 1px, y: (caption-body.absolute-position.y + 15px) / 1px }; }
+        if name == "caption-speaker" { return UiReportGeometry.center(caption-speaker.absolute-position, caption-speaker.width, caption-speaker.height); }
+        if name == "subtitle-style" { return UiReportGeometry.center(subtitle-style-button.absolute-position, subtitle-style-button.width, subtitle-style-button.height); }
+        if name == "timeline" { return UiReportGeometry.center(track.absolute-position, track.width, track.height); }
+        if name == "timeline-late" { return UiReportGeometry.center(track.absolute-position, track.width * 1.5, track.height); }
+        if name == "play" { return UiReportGeometry.center(play-button.absolute-position, play-button.width, play-button.height); }
+        if name == "proxy" { return UiReportGeometry.center(proxy-checkbox.absolute-position, proxy-checkbox.width, proxy-checkbox.height); }
+        if name == "about" { return UiReportGeometry.center(about-button.absolute-position, about-button.width, about-button.height); }
+        if name == "export" { return UiReportGeometry.center(export-button.absolute-position, export-button.width, export-button.height); }
+        if name == "ai" { return UiReportGeometry.center(ai-button.absolute-position, ai-button.width, ai-button.height); }
+        if name == "measurement" { return UiReportGeometry.center(measurement-button.absolute-position, measurement-button.width, measurement-button.height); }
+        if name == "new" { return UiReportGeometry.center(new-button.absolute-position, new-button.width, new-button.height); }
+        if name == "import" { return UiReportGeometry.center(import-button.absolute-position, import-button.width, import-button.height); }
+        if name == "choose-proxy" { return UiReportGeometry.center(choose-proxy-button.absolute-position, choose-proxy-button.width, choose-proxy-button.height); }
+        if name == "metrics-save" { return UiReportGeometry.center(metrics-save-button.absolute-position, metrics-save-button.width, metrics-save-button.height); }
+        return { x: -1, y: -1 };
+    }
+
+    public function report-panel(name: string) -> bool {
+        if name == "about" { return root.show-about; }
+        if name == "ai" { return root.show-ai-chat; }
+        return false;
+    }
+
+    public function report-ai-export-options() -> ExportSelection {
+        return { quality: root.ai-export-quality, canvas: root.ai-export-canvas };
+    }
+
+    public function report-reset-panels() {
+        subtitle-style-settings.close();
+        export-settings.close();
+        ai-export-settings.close();
+        root.show-about = false;
+        root.show-ai-chat = false;
+        root.confirm-discard = false;
+    }
+
     public function show-screenshot-panel(panel: ScreenshotPanel) {
         subtitle-style-settings.close();
         export-settings.close();
@@ -110,20 +176,20 @@ export component EditorWindow inherits Window {
         HorizontalLayout {
             spacing: 8px;
             Text { text: "meditor"; color: #e8edfa; font-size: 22px; font-weight: 700; vertical-alignment: center; }
-            Button { text: "新規"; clicked => { root.new-project(); } }
-            Button { text: "開く"; clicked => { root.open-project(); } }
-            Button { text: "保存"; enabled: root.has-project; clicked => { root.save-project(); } }
+            new-button := Button { text: "新規"; clicked => { root.new-project(); } }
+            open-button := Button { text: "開く"; clicked => { root.open-project(); } }
+            save-button := Button { text: "保存"; enabled: root.has-project; clicked => { root.save-project(); } }
             undo-button := Button { text: "元に戻す"; enabled: root.can-undo; clicked => { root.undo-edit(); } }
             redo-button := Button { text: "やり直す"; enabled: root.can-redo; clicked => { root.redo-edit(); } }
-            Button { text: "SRT 読込"; enabled: root.has-project; clicked => { root.import-captions(); } }
-            Button { text: "プロキシを選択"; enabled: root.has-project; clicked => { root.choose-proxy(); } }
-            Button {
+            import-button := Button { text: "SRT 読込"; enabled: root.has-project; clicked => { root.import-captions(); } }
+            choose-proxy-button := Button { text: "プロキシを選択"; enabled: root.has-project; clicked => { root.choose-proxy(); } }
+            export-button := Button {
                 text: root.exporting ? "書き出し中" : "書き出す";
                 enabled: root.has-project && !root.exporting;
                 clicked => { export-settings.show(); }
             }
             Rectangle { horizontal-stretch: 1; }
-            Button { text: "このアプリについて"; clicked => { root.show-about = true; } }
+            about-button := Button { text: "このアプリについて"; clicked => { root.show-about = true; } }
             Text { text: root.filename; color: #a6afc3; vertical-alignment: center; overflow: elide; max-width: 210px; }
         }
         HorizontalLayout {
@@ -193,8 +259,8 @@ export component EditorWindow inherits Window {
                 }
                 HorizontalLayout {
                     spacing: 8px;
-                    Button { text: root.playing ? "一時停止" : "再生"; enabled: root.has-project; clicked => { root.toggle-playback(); } }
-                    CheckBox { text: "スクラブにプロキシを使用"; enabled: root.has-proxy; checked <=> root.use-proxy; }
+                    play-button := Button { text: root.playing ? "一時停止" : "再生"; enabled: root.has-project; clicked => { root.toggle-playback(); } }
+                    proxy-checkbox := CheckBox { text: "スクラブにプロキシを使用"; enabled: root.has-proxy; checked <=> root.use-proxy; }
                     Rectangle { horizontal-stretch: 1; }
                     Text { text: root.clock-label; color: #c3cbe0; vertical-alignment: center; }
                 }
@@ -256,9 +322,9 @@ export component EditorWindow inherits Window {
                 HorizontalLayout {
                     spacing: 8px;
                     Text { text: "素材区間 (秒)"; color: #a6afc3; vertical-alignment: center; }
-                    LineEdit { text <=> root.clip-start; enabled: root.has-project; accessible-label: "素材の開始時刻"; }
-                    LineEdit { text <=> root.clip-end; enabled: root.has-project; accessible-label: "素材の終了時刻"; }
-                    Button { text: "区間を適用"; enabled: root.has-project; clicked => { root.update-clip(); } }
+                    clip-start-field := LineEdit { text <=> root.clip-start; enabled: root.has-project; accessible-label: "素材の開始時刻"; }
+                    clip-end-field := LineEdit { text <=> root.clip-end; enabled: root.has-project; accessible-label: "素材の終了時刻"; }
+                    clip-apply := Button { text: "区間を適用"; enabled: root.has-project; clicked => { root.update-clip(); } }
                 }
                 if root.show-ai-chat: VerticalLayout {
                     vertical-stretch: 0;
@@ -325,7 +391,7 @@ export component EditorWindow inherits Window {
                         vertical-alignment: center;
                         horizontal-stretch: 1;
                     }
-                    Button {
+                    subtitle-style-button := Button {
                         text: "字幕スタイル";
                         enabled: root.has-project;
                         clicked => {
@@ -383,21 +449,21 @@ export component EditorWindow inherits Window {
                     }
                 }
                 Text { text: root.selection-label; color: #a6afc3; overflow: elide; }
-                LineEdit { text <=> root.speaker-text; enabled: root.selected >= 0; placeholder-text: "話者"; edited(_) => { root.ai-caption-edit(); root.update-caption(); } }
-                TextEdit { text <=> root.caption-text; enabled: root.selected >= 0; placeholder-text: "字幕本文"; height: 98px; edited(_) => { root.ai-caption-edit(); root.update-caption(); } }
+                caption-speaker := LineEdit { text <=> root.speaker-text; enabled: root.selected >= 0; placeholder-text: "話者"; edited(_) => { root.ai-caption-edit(); root.update-caption(); } }
+                caption-body := TextEdit { text <=> root.caption-text; enabled: root.selected >= 0; placeholder-text: "字幕本文"; height: 98px; edited(_) => { root.ai-caption-edit(); root.update-caption(); } }
             }
         }
         HorizontalLayout {
             spacing: 8px;
             Text { text: root.status; color: #a6afc3; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
-            Button {
+            ai-button := Button {
                 text: root.show-ai-chat ? "AI 編集を閉じる" : "AI 編集";
                 enabled: root.has-project;
                 clicked => { root.show-ai-chat = !root.show-ai-chat; }
             }
-            Button { text: root.measuring ? "計測停止" : "計測開始"; enabled: root.has-project; clicked => { root.toggle-measurement(); } }
-            Button { text: "計測保存"; enabled: root.has-project; clicked => { root.save-metrics(); } }
-            Button {
+            measurement-button := Button { text: root.measuring ? "計測停止" : "計測開始"; enabled: root.has-project; clicked => { root.toggle-measurement(); } }
+            metrics-save-button := Button { text: "計測保存"; enabled: root.has-project; clicked => { root.save-metrics(); } }
+            transcription-button := Button {
                 text: root.transcription-cancelling ? "中止中" : root.transcribing ? "文字起こしを中止" : "文字起こし";
                 enabled: !root.transcription-cancelling;
                 clicked => { root.transcribe-audio(); }

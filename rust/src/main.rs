@@ -5,6 +5,7 @@ mod history_report;
 
 mod audio;
 mod caption_overlay;
+mod editor_dialogs;
 mod video;
 
 mod chat;
@@ -132,6 +133,9 @@ struct Editor {
     metrics: Metrics,
     smoke: Option<Smoke>,
     export_result: Option<std::sync::mpsc::Receiver<Result<PathBuf>>>,
+    dialogs: editor_dialogs::EditorDialogs,
+    report_ai_delay: Option<Duration>,
+    report_export_selection: Option<(i32, i32)>,
 }
 
 struct TranscriptionJob {
@@ -222,20 +226,28 @@ impl Editor {
         match leaving {
             Leave::Quit => slint::quit_event_loop().map_err(anyhow::Error::msg),
             Leave::Open => {
-                if let Some(path) = json_dialog("プロジェクトを開く").pick_file() {
+                let path = self
+                    .dialogs
+                    .file(|| json_dialog("プロジェクトを開く").pick_file());
+                if let Some(path) = path {
                     self.install(ui, Loaded::open(Project::load(&path)?, path)?);
                 }
                 Ok(())
             }
             Leave::New => {
-                let Some(video) = video_dialog("元動画を選択").pick_file() else {
+                let Some(video) = self
+                    .dialogs
+                    .file(|| video_dialog("元動画を選択").pick_file())
+                else {
                     return Ok(());
                 };
-                let wavs = rfd::FileDialog::new()
-                    .set_title("ゲーム音・話者の WAV を選択（キャンセルで音声なし）")
-                    .add_filter("PCM WAV", &["wav"])
-                    .pick_files()
-                    .unwrap_or_default();
+                let wavs = self.dialogs.files(|| {
+                    rfd::FileDialog::new()
+                        .set_title("ゲーム音・話者の WAV を選択（キャンセルで音声なし）")
+                        .add_filter("PCM WAV", &["wav"])
+                        .pick_files()
+                        .unwrap_or_default()
+                });
                 let gain = 1.0 / wavs.len().max(1) as f64;
                 let tracks = wavs
                     .into_iter()
@@ -250,10 +262,11 @@ impl Editor {
                         gain,
                     })
                     .collect();
-                let Some(path) = json_dialog("プロジェクトを保存")
-                    .set_file_name("project.json")
-                    .save_file()
-                else {
+                let Some(path) = self.dialogs.file(|| {
+                    json_dialog("プロジェクトを保存")
+                        .set_file_name("project.json")
+                        .save_file()
+                }) else {
                     return Ok(());
                 };
                 let mut loaded = Loaded::open(Project::new(video, tracks)?, path)?;
@@ -283,32 +296,36 @@ impl Editor {
             }
             return Ok(());
         }
-        let Some(engine) = rfd::FileDialog::new()
-            .set_title("ローカルの whisper-cli を選択")
-            .pick_file()
-        else {
+        let Some(engine) = self.dialogs.file(|| {
+            rfd::FileDialog::new()
+                .set_title("ローカルの whisper-cli を選択")
+                .pick_file()
+        }) else {
             return Ok(());
         };
-        let Some(model) = rfd::FileDialog::new()
-            .set_title("日本語に対応する whisper モデルを選択")
-            .add_filter("whisper.cpp モデル", &["bin"])
-            .pick_file()
-        else {
+        let Some(model) = self.dialogs.file(|| {
+            rfd::FileDialog::new()
+                .set_title("日本語に対応する whisper モデルを選択")
+                .add_filter("whisper.cpp モデル", &["bin"])
+                .pick_file()
+        }) else {
             return Ok(());
         };
-        let Some(audio) = rfd::FileDialog::new()
-            .set_title("文字起こしするモノラル 16 kHz PCM WAV を選択")
-            .add_filter("PCM WAV", &["wav"])
-            .pick_file()
-        else {
+        let Some(audio) = self.dialogs.file(|| {
+            rfd::FileDialog::new()
+                .set_title("文字起こしするモノラル 16 kHz PCM WAV を選択")
+                .add_filter("PCM WAV", &["wav"])
+                .pick_file()
+        }) else {
             return Ok(());
         };
-        let Some(output) = rfd::FileDialog::new()
-            .set_title("文字起こしの SRT 保存先を選択")
-            .add_filter("SubRip", &["srt"])
-            .set_file_name("transcript.srt")
-            .save_file()
-        else {
+        let Some(output) = self.dialogs.file(|| {
+            rfd::FileDialog::new()
+                .set_title("文字起こしの SRT 保存先を選択")
+                .add_filter("SubRip", &["srt"])
+                .set_file_name("transcript.srt")
+                .save_file()
+        }) else {
             return Ok(());
         };
 
@@ -362,7 +379,9 @@ impl Editor {
         let Some(loaded) = &self.loaded else {
             return Ok(());
         };
-        let Some(path) = video_dialog("同じタイムラインのプロキシを選択").pick_file()
+        let Some(path) = self
+            .dialogs
+            .file(|| video_dialog("同じタイムラインのプロキシを選択").pick_file())
         else {
             return Ok(());
         };
@@ -389,20 +408,23 @@ impl Editor {
             return Ok(());
         };
         if !loaded.project.captions.is_empty()
-            && rfd::MessageDialog::new()
-                .set_title("字幕の置き換え")
-                .set_description("現在の字幕を置き換えますか？")
-                .set_buttons(rfd::MessageButtons::YesNo)
-                .show()
-                != rfd::MessageDialogResult::Yes
+            && !self.dialogs.confirm(|| {
+                rfd::MessageDialog::new()
+                    .set_title("字幕の置き換え")
+                    .set_description("現在の字幕を置き換えますか？")
+                    .set_buttons(rfd::MessageButtons::YesNo)
+                    .show()
+                    == rfd::MessageDialogResult::Yes
+            })
         {
             return Ok(());
         }
-        if let Some(path) = rfd::FileDialog::new()
-            .set_title("UTF-8 SRT を選択")
-            .add_filter("SubRip", &["srt"])
-            .pick_file()
-        {
+        if let Some(path) = self.dialogs.file(|| {
+            rfd::FileDialog::new()
+                .set_title("UTF-8 SRT を選択")
+                .add_filter("SubRip", &["srt"])
+                .pick_file()
+        }) {
             loaded.project.captions = import_srt(&path)?;
             loaded.project.captions_use_source_time = false;
             loaded.dirty = true;
@@ -1011,12 +1033,16 @@ impl Editor {
             return Ok(());
         }
         let settings = export::ExportSettings::from_selection(selection.quality, selection.canvas)?;
-        let Some(destination) = rfd::FileDialog::new()
-            .set_title("字幕付き MP4 を書き出す")
-            .add_filter("MP4", &["mp4"])
-            .set_file_name("export.mp4")
-            .save_file()
-        else {
+        if self.dialogs.scripted() {
+            self.report_export_selection = Some((selection.quality, selection.canvas));
+        }
+        let Some(destination) = self.dialogs.file(|| {
+            rfd::FileDialog::new()
+                .set_title("字幕付き MP4 を書き出す")
+                .add_filter("MP4", &["mp4"])
+                .set_file_name("export.mp4")
+                .save_file()
+        }) else {
             return Ok(());
         };
         let snapshot = export::ExportSnapshot::capture(
@@ -1057,10 +1083,11 @@ impl Editor {
     fn save_metrics(&mut self, ui: &EditorWindow) -> Result<()> {
         self.metrics.enabled = false;
         ui.set_measuring(false);
-        if let Some(path) = json_dialog("計測を保存")
-            .set_file_name("preview-metrics.json")
-            .save_file()
-        {
+        if let Some(path) = self.dialogs.file(|| {
+            json_dialog("計測を保存")
+                .set_file_name("preview-metrics.json")
+                .save_file()
+        }) {
             serde_json::to_writer_pretty(
                 File::create(path)?,
                 &json!({
@@ -1094,7 +1121,26 @@ impl Editor {
             captions: loaded.project.captions.clone(),
             clip_draft: clip_draft(ui),
         };
+        let report_ai_delay = self.report_ai_delay.take();
+        ensure!(
+            !self.dialogs.scripted() || report_ai_delay.is_some(),
+            "画面検査用のAI応答がありません"
+        );
         self.chat.start(input, move |input, cancelled| {
+            if let Some(delay) = report_ai_delay {
+                // The simulated service can finish even after the editor cancels.
+                std::thread::sleep(delay);
+                return Ok(Some(meditor_playback::ai::ClipSelection {
+                    range: ClipRange {
+                        source_start_us: 8_000_000,
+                        source_end_us: 11_000_000,
+                    },
+                    export: Some(meditor_playback::ai::ExportPreferences {
+                        quality: Some(meditor_playback::ai::ExportQuality::High),
+                        canvas: Some(meditor_playback::ai::ExportCanvas::Portrait),
+                    }),
+                }));
+            }
             meditor_playback::ai::select_codex_clip(
                 &prompt,
                 &input.captions,

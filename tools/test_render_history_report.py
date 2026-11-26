@@ -122,6 +122,33 @@ class HistoryReportTest(unittest.TestCase):
                 self.assertNotIn(content, markup)
                 self.assertEqual(markup.count("&lt;script&gt;alert(1)&lt;/script&gt;"), 2)
 
+    def test_editor_operation_archive_keeps_its_own_images_and_input_method(self):
+        feature = report["editor_catalogue"]()
+        counts = {key: value[1] for key, value in report["EDITOR_CASES"].items()}
+        payload = io.BytesIO()
+        records = []
+        png = report["PNG_HEADER"] + struct.pack(">II", 1, 1)
+        with zipfile.ZipFile(payload, "w") as archive:
+            for index, case in enumerate(feature["scenarios"], 1):
+                steps = []
+                for position in range(1, counts[case["id"]] + 1):
+                    name = f"editor-{index}-{position}.png"
+                    archive.writestr(name, png)
+                    steps.append(dict(
+                        action="画面操作", screenshot=name,
+                        checks=[dict(name="確認点", expected="A", actual="A")],
+                    ))
+                records.append(dict(name=case["name"], evidence_id=case["id"], steps=steps))
+            archive.writestr("report.json", json.dumps(dict(input_method="window-events", scenarios=records)))
+        with tempfile.TemporaryDirectory() as out, zipfile.ZipFile(payload) as archive:
+            evidence = report["read_report"](archive, Path(out), [feature], counts, "editor-")
+        markup = report["render"]([feature, *self.catalogue], evidence, 55, "abc123", 123)
+        section = markup.split("<section id='scenario-editor-project'", 1)[1].split("</section>", 1)[0]
+        self.assertNotIn("Gherkinの手順", section)
+        self.assertIn("クリックとキー入力", section)
+        self.assertIn("editor-1-1.png", section)
+        self.assertIn(f"{len(self.cases)} シナリオ · UI操作 {len(counts)} 件", markup)
+
 
 if __name__ == "__main__":
     unittest.main()

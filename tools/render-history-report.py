@@ -28,12 +28,28 @@ CAPTURE_SCOPE_NOTES = {
     **dict.fromkeys(INVALID_CLIP_EXAMPLES.values(), "合成プロジェクトで入力時のエラー表示と、適用済みの区間が保持されることを確認します。"),
 }
 IMAGE_LIMIT = 2 * 1024 * 1024
+EDITOR_CASES = {
+    "editor-project": ("プロジェクト作成と未保存時の確認", 7),
+    "editor-playback": ("再生・一時停止・シーク", 6),
+    "editor-captions": ("SRTの取り込みと字幕一覧の操作", 6),
+    "editor-panels": ("アプリ情報・AI・書き出し設定の開閉", 6),
+    "editor-proxy": ("プロキシの選択と切り替え", 3),
+    "editor-metrics": ("計測の開始・停止・保存", 3),
+    "editor-export": ("書き出し設定の選択とMP4保存", 6),
+    "editor-transcription": ("ローカル文字起こしの開始・中止・保存", 4),
+    "editor-ai": ("合成AI応答の適用・設定確認・中断", 7),
+}
+EDITOR_SCOPES = {
+    "editor-ai": "アプリ内のAI結果は合成応答で再現しています。実アカウントへの接続とモデルの回答品質は検査範囲に含みません。",
+    "editor-transcription": "文字起こしエンジンはSRTを返すテスト用CLIです。実モデルの認識精度は検査範囲に含みません。",
+}
 
 
 @dataclass
 class Evidence:
     failed: bool
     stages: list[str]
+    window_events: bool = False
 
 
 def require(condition, message):
@@ -46,16 +62,17 @@ def text(value):
     return html.escape(value)
 
 
-def read_report(archive, destination, catalogue):
+def read_report(archive, destination, catalogue, stage_counts=CAPTURE_STAGE_COUNTS, png_prefix=""):
     files = {file.filename: file for file in archive.infolist()}
     require(
         len(files) == len(archive.infolist())
-        and all(re.fullmatch(r"report\.json|[1-9][0-9]?-[1-9][0-9]?\.png", name) for name in files),
+        and all(re.fullmatch(rf"report\.json|{re.escape(png_prefix)}[1-9][0-9]?-[1-9][0-9]?\.png", name) for name in files),
         "Unexpected report files",
     )
     require("report.json" in files and files["report.json"].file_size <= 64 * 1024, "Invalid report JSON")
-    results = json.loads(archive.read("report.json"))["scenarios"]
-    require(isinstance(results, list) and len(results) == len(CAPTURE_STAGE_COUNTS), "Invalid scenarios")
+    report = json.loads(archive.read("report.json"))
+    results = report["scenarios"]
+    require(isinstance(results, list) and len(results) == len(stage_counts), "Invalid scenarios")
     cases_by_tag = {
         case["evidence_id"]: case
         for feature in catalogue
@@ -66,11 +83,11 @@ def read_report(archive, destination, catalogue):
     used = {"report.json"}
     for index, scenario in enumerate(results, 1):
         tag = scenario["evidence_id"]
-        require(tag in CAPTURE_STAGE_COUNTS and tag in cases_by_tag, "Unknown UI capture tag")
+        require(tag in stage_counts and tag in cases_by_tag, "Unknown UI capture tag")
         case = cases_by_tag[tag]
         require(case["id"] not in evidence, f"Duplicate UI capture tag: {tag}")
         require(scenario["name"] == case["name"], f"UI capture title differs from Gherkin: {tag}")
-        maximum = CAPTURE_STAGE_COUNTS[tag]
+        maximum = stage_counts[tag]
         steps = scenario["steps"]
         require(isinstance(steps, list) and 0 < len(steps) <= maximum, "Invalid steps")
         rendered = []
@@ -89,7 +106,7 @@ def read_report(archive, destination, catalogue):
                     f"<td>{text(check['expected'])}</td><td>{text(check['actual'])}</td>"
                     f"<td class='{'pass' if passed else 'fail'}'>{'成功' if passed else '失敗'}</td></tr>"
                 )
-            name = f"{index}-{position}.png"
+            name = f"{png_prefix}{index}-{position}.png"
             require(step["screenshot"] == name and files[name].file_size <= IMAGE_LIMIT, "Invalid image")
             png = archive.read(name)
             require(png.startswith(PNG_HEADER) and len(png) >= 24, "Expected a screenshot PNG")
@@ -135,9 +152,21 @@ def read_report(archive, destination, catalogue):
             and (failed or authored_spec == captured_spec),
             f"UI capture steps differ from Gherkin: {tag}",
         )
-        evidence[case["id"]] = Evidence(failed, rendered)
+        evidence[case["id"]] = Evidence(failed, rendered, report.get("input_method") == "window-events")
     require(used == files.keys(), "Unexpected screenshot")
     return evidence
+
+
+def editor_catalogue():
+    return {
+        "name": "エディターのUI操作",
+        "uri": "",
+        "scenarios": [
+            dict(id=case_id, name=name, line=0, rule=None, description="", planned=False,
+                 evidence_id=case_id, steps=[], example=None)
+            for case_id, (name, _) in EDITOR_CASES.items()
+        ],
+    }
 
 
 def timeline(items, label, prefix):
@@ -187,6 +216,7 @@ def render(catalogue, evidence, pr, sha, run):
             description = case["description"]
             description_note = f"<p class='description'>{html.escape(description)}</p>" if description else ""
             captures = evidence.get(case["id"])
+            authored = bool(case["steps"])
             image_count = len(captures.stages) if captures else 0
             spec_id = f"{scenario_id}-spec"
             status, state = ("計画中", "neutral") if case["planned"] else ("画面の実行結果なし", "neutral")
@@ -197,11 +227,18 @@ def render(catalogue, evidence, pr, sha, run):
                 status, state = ("失敗", "fail") if captures.failed else ("成功", "pass")
                 (failures if captures.failed else verified).append(scenario_id)
                 screenshot_note = f" · 画像 {image_count} 枚"
-                spec_link = f" <a href='#{spec_id}'>Gherkinの手順へ</a>"
+                if authored:
+                    spec_link = f" <a href='#{spec_id}'>Gherkinの手順へ</a>"
+                input_note = (
+                    "<p class='coverage-note'>エディターにクリックとキー入力を送信して検査しています。"
+                    "OSのファイル選択には合成素材のパスを渡しています。</p>"
+                    if captures.window_events else ""
+                )
                 results = (
                     "<h3 class='flow-title'>画面検査の操作と結果</h3>"
-                    + (f"<p class='coverage-note'>{CAPTURE_SCOPE_NOTES[case['evidence_id']]}</p>"
-                       if case["evidence_id"] in CAPTURE_SCOPE_NOTES else "")
+                    + input_note
+                    + (f"<p class='coverage-note'>{scope_note}</p>" if (scope_note :=
+                        (CAPTURE_SCOPE_NOTES.get(case["evidence_id"]) or EDITOR_SCOPES.get(case["evidence_id"]))) else "")
                     + timeline(captures.stages, "画面検査の操作と結果", f"{scenario_id}-stage")
                 )
                 if not captures.failed and case["evidence_id"] in CAPTURE_SCOPE_NOTES:
@@ -213,24 +250,30 @@ def render(catalogue, evidence, pr, sha, run):
                 example_note = f"<p class='source'>例 {example['line']}行目 · {html.escape(values)}</p>"
             links.append(
                 f"<a href='#{scenario_id}' data-images='{image_count}'><span>{name}</span>"
-                f"<small class='{state}'>{status} · {len(case['steps'])} ステップ"
+                f"<small class='{state}'>{status}"
+                + (f" · {len(case['steps'])} ステップ" if authored else "")
                 + screenshot_note + (f" · 例 {example['line']}行目" if example else "") + "</small></a>"
+            )
+            specification = (
+                f"<h3 class='flow-title' id='{spec_id}'>Gherkinの手順</h3>"
+                f"<p class='source'><code>{source}</code></p>{description_note}{example_note}"
+                + timeline((render_spec(step) for step in case["steps"]), "Gherkinの手順", f"{scenario_id}-step")
+                if authored else ""
             )
             panels.append(
                 f"<section id='{scenario_id}' aria-labelledby='{scenario_id}-title'>"
                 f"<p class='feature-path'>{feature_context}</p>"
                 f"<h2 id='{scenario_id}-title' tabindex='-1'>{name}</h2>"
                 f"<p class='scenario-meta'><strong class='{state}'>{status}</strong>{screenshot_note}{spec_link}</p>"
-                f"{results}<h3 class='flow-title' id='{spec_id}'>Gherkinの手順</h3>"
-                f"<p class='source'><code>{source}</code></p>{description_note}{example_note}"
-                + timeline((render_spec(step) for step in case["steps"]), "Gherkinの手順", f"{scenario_id}-step")
-                + "</section>"
+                f"{results}{specification}</section>"
             )
         groups.append(
             f"<div class='feature-group'><h3>{feature_name}</h3>{''.join(links)}</div>"
         )
     preferred = (failures + verified + [""])[0]
-    summary = f"{total} シナリオ · 画面検査の結果 {len(evidence)} 件"
+    editor_total = sum(len(feature["scenarios"]) for feature in catalogue if not feature["uri"])
+    extras = f" · UI操作 {editor_total} 件" if editor_total else ""
+    summary = f"{total - editor_total} シナリオ{extras} · 画面検査の結果 {len(evidence)} 件"
     return f"""<!doctype html>
 <html lang="ja">
 <head>
@@ -481,6 +524,7 @@ def main():
     parser.add_argument("gherkin_zip", type=Path)
     parser.add_argument("output", type=Path)
     parser.add_argument("--evidence", type=Path)
+    parser.add_argument("--editor-evidence", type=Path)
     parser.add_argument("--pr", type=int, required=True)
     parser.add_argument("--sha", required=True)
     parser.add_argument("--run", type=int, required=True)
@@ -493,6 +537,14 @@ def main():
     if args.evidence:
         with zipfile.ZipFile(args.evidence) as archive:
             evidence = read_report(archive, args.output, catalogue)
+    if args.editor_evidence:
+        editor_cases = editor_catalogue()
+        with zipfile.ZipFile(args.editor_evidence) as archive:
+            evidence.update(read_report(
+                archive, args.output, [editor_cases],
+                {key: value[1] for key, value in EDITOR_CASES.items()}, "editor-",
+            ))
+        catalogue.insert(0, editor_cases)
     markup = render(catalogue, evidence, args.pr, args.sha, args.run)
     (args.output / "index.html").write_text(markup, encoding="utf-8")
 
