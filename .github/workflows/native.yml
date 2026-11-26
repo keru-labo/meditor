@@ -62,18 +62,42 @@ jobs:
           for name in editor subtitle-style subtitle-preview ai-edit export-settings; do
             test -s "artifacts/feature-screenshots/$name.png"
           done
-      - name: Capture the Undo/Redo scenarios
+      - name: Capture the BDD editor scenarios
         if: github.event_name == 'pull_request'
         env:
           SDL_AUDIODRIVER: dummy
         run: xvfb-run -a timeout 50s rust/target/release/meditor --history-bdd-report artifacts/fixture/fixture.json artifacts/history-report
-      - name: Upload the Undo/Redo results
+      - name: Upload the BDD screen evidence
         if: ${{ !cancelled() && hashFiles('artifacts/history-report/report.json') != '' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          # Keep the first-attempt name for the publisher already on main.
-          name: ${{ github.run_attempt == '1' && 'meditor-history-report' || format('meditor-history-report-{0}', github.run_attempt) }}
+          name: meditor-bdd-ui-evidence-${{ github.run_attempt }}
           path: artifacts/history-report/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Prepare the Undo/Redo subset for the current Pages publisher
+        if: ${{ !cancelled() && github.run_attempt == '1' && hashFiles('artifacts/history-report/report.json') != '' }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import shutil
+          from pathlib import Path
+
+          full = Path("artifacts/history-report")
+          legacy = Path("artifacts/history-report-legacy")
+          legacy.mkdir(exist_ok=True)
+          report = json.loads((full / "report.json").read_text(encoding="utf-8"))
+          report["scenarios"] = report["scenarios"][:2]
+          (legacy / "report.json").write_text(json.dumps(report), encoding="utf-8")
+          for stage in full.glob("[12]-*.png"):
+              shutil.copyfile(stage, legacy / stage.name)
+          PY
+      - name: Upload evidence for the current Pages publisher
+        if: ${{ !cancelled() && hashFiles('artifacts/history-report-legacy/report.json') != '' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: meditor-history-report
+          path: artifacts/history-report-legacy/
           if-no-files-found: error
           retention-days: 14
       - name: Verify the HTML report with the captured screenshots
@@ -101,7 +125,7 @@ jobs:
         run: |
           mutation=$(mktemp -d "$RUNNER_TEMP/history-mutation.XXXXXX")
           trap 'rm -rf "$mutation"' EXIT
-          tar --exclude=rust/target -cf - rust docs/features/edit-history.feature | tar -xf - -C "$mutation"
+          tar --exclude=rust/target -cf - rust docs/features | tar -xf - -C "$mutation"
           history="$mutation/rust/src/history.rs"
           if [ "$(grep -Fxc '            self.redo.clear();' "$history")" -ne 1 ]; then
             echo "::error::Could not locate one redo-clearing statement"

@@ -10,10 +10,23 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from gherkin_report_catalog import read_catalog
+from gherkin_report_catalog import INVALID_CLIP_EXAMPLES, read_catalog
 
 PNG_HEADER = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
-CAPTURE_STAGE_COUNTS = {"ui-redo-after-edit": 3, "ui-reopen-history": 4}
+CAPTURE_STAGE_COUNTS = {
+    "ui-redo-after-edit": 3,
+    "ui-reopen-history": 4,
+    "ui-clip-trim-start": 3,
+    "ui-clip-trim-end": 2,
+    "ui-subtitle-style": 3,
+    **dict.fromkeys(INVALID_CLIP_EXAMPLES.values(), 2),
+}
+CAPTURE_SCOPE_NOTES = {
+    "ui-clip-trim-start": "画面検査の対象は素材区間、タイムラインの長さ、保存後の復元です。音声同期は別途確認が必要です。",
+    "ui-clip-trim-end": "素材区間をあらかじめ設定した合成プロジェクトで、終了位置とタイムラインの長さを確認します。",
+    "ui-subtitle-style": "画面検査の対象はプレビューの字幕と設定値、Undo での復元です。MP4の出力と背景の画素は別途確認が必要です。",
+    **dict.fromkeys(INVALID_CLIP_EXAMPLES.values(), "合成プロジェクトで入力時のエラー表示と、適用済みの区間が保持されることを確認します。"),
+}
 IMAGE_LIMIT = 2 * 1024 * 1024
 
 
@@ -37,7 +50,7 @@ def read_report(archive, destination, catalogue):
     files = {file.filename: file for file in archive.infolist()}
     require(
         len(files) == len(archive.infolist())
-        and all(re.fullmatch(r"report\.json|[12]-[1-4]\.png", name) for name in files),
+        and all(re.fullmatch(r"report\.json|[1-9][0-9]?-[1-9][0-9]?\.png", name) for name in files),
         "Unexpected report files",
     )
     require("report.json" in files and files["report.json"].file_size <= 64 * 1024, "Invalid report JSON")
@@ -98,7 +111,7 @@ def read_report(archive, destination, catalogue):
                 "<dl class='specification'>" + "".join(
                     f"<div><dt>{text(item['keyword'])}</dt><dd>{text(item['text'])}</dd></div>"
                     for item in specification
-                ) + "</dl>" if specification else ""
+                ) + "</dl>" if specification and tag not in CAPTURE_SCOPE_NOTES else ""
             )
             step_passed = all(check["expected"] == check["actual"] for check in checks)
             rationale = text(step.get("rationale", "画面から取得した値を、操作後に期待する値と照合しています。"))
@@ -187,8 +200,12 @@ def render(catalogue, evidence, pr, sha, run):
                 spec_link = f" <a href='#{spec_id}'>Gherkinの手順へ</a>"
                 results = (
                     "<h3 class='flow-title'>画面検査の操作と結果</h3>"
+                    + (f"<p class='coverage-note'>{CAPTURE_SCOPE_NOTES[case['evidence_id']]}</p>"
+                       if case["evidence_id"] in CAPTURE_SCOPE_NOTES else "")
                     + timeline(captures.stages, "画面検査の操作と結果", f"{scenario_id}-stage")
                 )
+                if not captures.failed and case["evidence_id"] in CAPTURE_SCOPE_NOTES:
+                    status = "画面で確認"
             example = case["example"]
             example_note = ""
             if example:
@@ -315,6 +332,7 @@ main h2 {{ font-size: clamp(1.35rem, 3vw, 2rem) }}
 .source + .steps, .description + .steps {{ margin-top: .8rem }}
 .description {{ margin-top: .75rem; white-space: pre-wrap; overflow-wrap: anywhere }}
 .flow-title {{ margin: 1.65rem 0 .8rem; font-size: 1.13rem }}
+.coverage-note {{ margin: 0 0 .8rem; color: var(--muted) }}
 .steps {{
   position: relative; padding: 0 0 0 3rem; list-style: none;
   display: grid; gap: 1rem; margin: 0;

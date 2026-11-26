@@ -55,8 +55,7 @@ jobs:
             if (!Number.isInteger(attempt) || attempt < 1) throw new Error('Invalid workflow attempt');
             const catalogue = await findArtifact(`meditor-bdd-catalogue-${attempt}`, 4 * 1024 * 1024);
             if (!catalogue) return;
-            const evidenceName = attempt === 1 ? 'meditor-history-report' : `meditor-history-report-${attempt}`;
-            const evidence = await findArtifact(evidenceName, 16 * 1024 * 1024);
+            const evidence = await findArtifact(`meditor-bdd-ui-evidence-${attempt}`, 16 * 1024 * 1024);
             const { data: pulls } = await github.rest.pulls.list({
               owner, repo, state: 'open', head: `${owner}:${run.head_branch}`, per_page: 100,
             });

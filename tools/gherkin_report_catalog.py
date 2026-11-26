@@ -9,8 +9,21 @@ import stat
 from pathlib import Path
 
 FEATURE_ROOT = Path(__file__).resolve().parent.parent / "docs/features"
-EVIDENCE_IDS = {"ui-redo-after-edit", "ui-reopen-history"}
-HISTORY_FEATURE = "docs/features/edit-history.feature"
+CLIP_FEATURE = "docs/features/ai-clip-editing.feature"
+INVALID_CLIP_EXAMPLES = {
+    ("開始", "-1"): "ui-clip-invalid-start-negative",
+    ("終了", "91"): "ui-clip-invalid-end-outside",
+    ("開始", "40"): "ui-clip-invalid-start-equal",
+    ("終了", "31"): "ui-clip-invalid-end-before",
+}
+EVIDENCE_FEATURES = {
+    "ui-redo-after-edit": "docs/features/edit-history.feature",
+    "ui-reopen-history": "docs/features/edit-history.feature",
+    "ui-clip-trim-start": CLIP_FEATURE,
+    "ui-clip-trim-end": CLIP_FEATURE,
+    "ui-subtitle-style": "docs/features/subtitle-editing.feature",
+    **dict.fromkeys(INVALID_CLIP_EXAMPLES.values(), CLIP_FEATURE),
+}
 MAX_FILES = 64
 MAX_ARCHIVE_ENTRIES = 160
 MAX_FILE_BYTES = 64 * 1024
@@ -140,12 +153,17 @@ def index_feature(feature, outlines, uri):
     return scenarios, steps, examples, case_count, step_count, tag_count
 
 
-def capture_id(tags, evidence_ids, uri):
-    bindings = {tag[1:] for tag in tags if tag[1:] in EVIDENCE_IDS}
+def capture_id(tags, evidence_ids, uri, example):
+    bindings = {tag[1:] for tag in tags if tag[1:] in EVIDENCE_FEATURES and tag[1:] not in INVALID_CLIP_EXAMPLES.values()}
+    if "@ui-clip-invalid" in tags:
+        values = dict(example["values"]) if example else {}
+        invalid_clip_id = INVALID_CLIP_EXAMPLES.get((values.get("境界"), values.get("秒")))
+        require(invalid_clip_id is not None, f"{uri}: unexpected invalid clip example")
+        bindings.add(invalid_clip_id)
     require(len(bindings) <= 1, f"{uri}: Gherkin case has conflicting UI evidence tags")
     binding = next(iter(bindings), None)
     if binding is not None:
-        require(uri == HISTORY_FEATURE and "@planned" not in tags, f"{uri}: invalid UI evidence tag @{binding}")
+        require(uri == EVIDENCE_FEATURES[binding] and "@planned" not in tags, f"{uri}: invalid UI evidence tag @{binding}")
         require(binding not in evidence_ids, f"{uri}: duplicate UI evidence tag @{binding}")
         evidence_ids.add(binding)
     return binding
@@ -259,10 +277,11 @@ def read_catalog(archive):
                     background=background, argument=step_argument(step.get("argument", {})),
                 ))
             case_id = hashlib.sha256(f"{uri}:{line}".encode()).hexdigest()[:24]
+            example = examples.get(case["astNodeIds"][-1])
             rendered = dict(
                 id=case_id, name=bounded(case["name"]), rule=bounded(rule) if rule else None,
-                line=line, tags=tags, planned="@planned" in tags, evidence_id=capture_id(tags, evidence_ids, uri),
-                steps=rendered_steps, example=examples.get(case["astNodeIds"][-1]),
+                line=line, tags=tags, planned="@planned" in tags, evidence_id=capture_id(tags, evidence_ids, uri, example),
+                steps=rendered_steps, example=example,
                 description=bounded(scenario["description"].strip()),
             )
             rendered_bytes += len(json.dumps(rendered, ensure_ascii=False).encode("utf-8"))

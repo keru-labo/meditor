@@ -24,7 +24,7 @@ class HistoryReportTest(unittest.TestCase):
         self.cases = [case for feature in self.catalogue for case in feature["scenarios"]]
         self.captured = {case["evidence_id"]: case for case in self.cases if case["evidence_id"]}
 
-    def evidence_zip(self, first_failure=False, swap_tags=False, wrong_spec=False):
+    def evidence_zip(self, first_failure=False, swap_tags=False, wrong_spec=False, swap_invalid_tags=False):
         records = []
         payload = io.BytesIO()
         png = report["PNG_HEADER"] + struct.pack(">II", 1, 1)
@@ -50,6 +50,10 @@ class HistoryReportTest(unittest.TestCase):
                 records[0]["evidence_id"], records[1]["evidence_id"] = (
                     records[1]["evidence_id"], records[0]["evidence_id"],
                 )
+            if swap_invalid_tags:
+                records[5]["evidence_id"], records[7]["evidence_id"] = (
+                    records[7]["evidence_id"], records[5]["evidence_id"],
+                )
             archive.writestr("report.json", json.dumps(dict(scenarios=records)))
         return payload
 
@@ -70,12 +74,14 @@ class HistoryReportTest(unittest.TestCase):
         self.assertNotIn("<img ", markup)
         self.assertIn("スクリーンショットなし", markup)
 
-    def test_only_the_two_tagged_cases_show_success_and_screenshots(self):
+    def test_tagged_cases_show_screenshots_with_their_actual_coverage(self):
         evidence = self.read_evidence()
         self.assertEqual(set(evidence), {case["id"] for case in self.captured.values()})
         markup = self.render(evidence)
-        self.assertEqual(markup.count("<img "), 7)
-        self.assertEqual(markup.count("<strong class='pass'>"), 2)
+        self.assertEqual(markup.count("<img "), 23)
+        self.assertEqual(markup.count("<strong class='pass'>成功"), 2)
+        self.assertEqual(markup.count("<strong class='pass'>画面で確認"), 7)
+        self.assertIn("MP4の出力と背景の画素は別途確認が必要です。", markup)
         self.assertIn("なぜ成功か", markup)
         for case in self.captured.values():
             scenario = f"scenario-{case['id']}"
@@ -94,13 +100,15 @@ class HistoryReportTest(unittest.TestCase):
         self.assertIn(f'data-preferred="scenario-{case["id"]}"', markup)
         self.assertIn(case["steps"][-1]["text"], markup)
         self.assertIn("何が期待と違うか", markup)
-        self.assertEqual(markup.count("<img "), 5)
+        self.assertEqual(markup.count("<img "), 21)
 
     def test_changed_spec_or_swapped_tag_cannot_inherit_evidence(self):
         with self.assertRaisesRegex(ValueError, "title differs"):
             self.read_evidence(swap_tags=True)
         with self.assertRaisesRegex(ValueError, "steps differ"):
             self.read_evidence(wrong_spec=True)
+        with self.assertRaisesRegex(ValueError, "steps differ"):
+            self.read_evidence(swap_invalid_tags=True)
 
     def test_spec_arguments_are_rendered_as_text(self):
         content = "<script>alert(1)</script>"

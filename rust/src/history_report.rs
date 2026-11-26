@@ -1,4 +1,4 @@
-//! Exercise the editor's UI callbacks and record visible Undo/Redo outcomes.
+//! Exercise the editor's UI callbacks and record visible BDD outcomes.
 
 use super::{Editor, EditorWindow, Loaded, Project, TICK, capture_window};
 use anyhow::{Result, ensure};
@@ -213,6 +213,139 @@ fn perform(
                 vec![check("素材区間", EDITED_RANGE, clip(ui))],
             )
         }
+        (2 | 3 | 5..=8, 0) => {
+            let (start, expected, length) = if scenario < 5 {
+                (
+                    30_000_000,
+                    "30.000000 – 40.000000 秒",
+                    "00:00.000  /  00:10.000",
+                )
+            } else {
+                (
+                    32_000_000,
+                    "32.000000 – 40.000000 秒",
+                    "00:00.000  /  00:08.000",
+                )
+            };
+            let range = super::ClipRange {
+                source_start_us: start,
+                source_end_us: 40_000_000,
+            };
+            let mut project = Project::load(source)?;
+            project.set_clip(range, 60_000_000)?;
+            let loaded = Loaded::open(project, destination.to_path_buf())?;
+            editor.borrow_mut().install(ui, loaded);
+            (
+                "素材区間を設定済みのプロジェクトを開く",
+                &["素材区間を設定した合成プロジェクトを開く"],
+                "素材の開始・終了と先頭の再生位置、区間の長さで、変更前の状態を確認する。",
+                clip_timing(ui, expected, length),
+            )
+        }
+        (2, 1) => {
+            ui.set_clip_start("32".into());
+            ui.invoke_update_clip();
+            (
+                "クリップの開始を32秒に変更する",
+                &["開始に「32」を入力して「区間を適用」を押す"],
+                "素材区間の開始だけが32秒に移動し、タイムラインの長さが8秒になる。",
+                clip_timing(ui, "32.000000 – 40.000000 秒", "00:00.000  /  00:08.000"),
+            )
+        }
+        (2, 2) => {
+            ui.invoke_save_project();
+            let saved = ui.get_status();
+            open_project(ui, editor, destination, destination)?;
+            let mut checks = clip_timing(ui, "32.000000 – 40.000000 秒", "00:00.000  /  00:08.000");
+            checks.push(check("保存結果", "プロジェクトを保存しました", saved));
+            (
+                "区間の変更を保存して開き直す",
+                &["「保存」を押す", "保存したプロジェクトを開き直す"],
+                "保存完了の表示が出て、開き直しても32〜40秒の区間と8秒の長さが維持される。",
+                checks,
+            )
+        }
+        (3, 1) => {
+            ui.set_clip_end("38".into());
+            ui.invoke_update_clip();
+            (
+                "クリップの終了を38秒に変更する",
+                &["終了に「38」を入力して「区間を適用」を押す"],
+                "素材区間の開始は30秒のまま、終了が38秒になり、タイムラインの長さが8秒になる。",
+                clip_timing(ui, "30.000000 – 38.000000 秒", "00:00.000  /  00:08.000"),
+            )
+        }
+        (4, 0) => {
+            open_project(ui, editor, source, destination)?;
+            (
+                "既定の字幕をプレビューする",
+                &[OPEN_SAMPLE],
+                "字幕が表示され、文字色と縁取りが適用前の値になっている。",
+                subtitle_appearance(ui, "#FFFFFF", "#101010", "2"),
+            )
+        }
+        (4, 1) => {
+            let mut style = ui.get_subtitle_style_draft();
+            style.text_color = "#FFFF00".into();
+            style.outline_color = "#0044FF".into();
+            style.outline_width = 8;
+            let accepted = ui.invoke_update_subtitle_style(style);
+            let mut checks = subtitle_appearance(ui, "#FFFF00", "#0044FF", "8");
+            checks.push(check(
+                "設定の適用",
+                "成功",
+                if accepted { "成功" } else { "失敗" },
+            ));
+            (
+                "黄色の文字と太い青の縁取りを適用する",
+                &["字幕スタイルの文字色を黄色、縁取りを青、太さを8に設定して適用する"],
+                "設定が受理され、現在のプレビューに渡る文字色・縁取りの色・太さが更新される。",
+                checks,
+            )
+        }
+        (4, 2) => {
+            ui.invoke_undo_edit();
+            (
+                "字幕スタイルを一度で元に戻す",
+                &[UNDO],
+                "Undo を一度行うと、プレビューの文字色・縁取りの色・太さがすべて適用前に戻る。",
+                subtitle_appearance(ui, "#FFFFFF", "#101010", "2"),
+            )
+        }
+        (5..=8, 1) => {
+            let (_, control, input) = spec::INVALID_CLIP_INPUTS[scenario - 5];
+            if control == "開始" {
+                ui.set_clip_start(input.into());
+            } else {
+                ui.set_clip_end(input.into());
+            }
+            ui.invoke_update_clip();
+            let range = editor.borrow().loaded.as_ref().unwrap().range();
+            let actual = format!(
+                "{} – {} 秒",
+                super::seconds_text(range.source_start_us),
+                super::seconds_text(range.source_end_us),
+            );
+            let error = if input == "-1" {
+                "開始時刻を確認してください"
+            } else {
+                "素材内の有効な開始・終了時刻を入力してください"
+            };
+            (
+                "無効な時刻で区間を適用する",
+                &["開始または終了に例の時刻を入力し、「区間を適用」を押す"],
+                "入力エラーが表示され、適用済みの素材区間とタイムラインの長さが変更前のままである。",
+                vec![
+                    check("入力エラーの表示", error, ui.get_status()),
+                    check("適用されている素材区間", "32.000000 – 40.000000 秒", actual),
+                    check(
+                        "再生位置 ／ 区間の長さ",
+                        "00:00.000  /  00:08.000",
+                        ui.get_clock_label(),
+                    ),
+                ],
+            )
+        }
         _ => unreachable!(),
     };
     Ok(Step {
@@ -223,6 +356,35 @@ fn perform(
         screenshot: format!("{}-{}.png", scenario + 1, step + 1),
         spec: Vec::new(),
     })
+}
+
+fn clip_timing(ui: &EditorWindow, range: &'static str, clock: &'static str) -> Vec<Check> {
+    vec![
+        check("素材区間", range, clip(ui)),
+        check("再生位置 ／ 区間の長さ", clock, ui.get_clock_label()),
+    ]
+}
+
+fn subtitle_appearance(
+    ui: &EditorWindow,
+    text: &'static str,
+    outline: &'static str,
+    width: &'static str,
+) -> Vec<Check> {
+    fn hex(color: slint::Color) -> String {
+        format!(
+            "#{:02X}{:02X}{:02X}",
+            color.red(),
+            color.green(),
+            color.blue()
+        )
+    }
+    let appearance = ui.get_caption_appearance();
+    vec![
+        check("文字色", text, hex(appearance.text_color)),
+        check("縁取りの色", outline, hex(appearance.outline_color)),
+        check("縁取りの太さ", width, appearance.outline_width.to_string()),
+    ]
 }
 
 pub(super) fn run(
@@ -274,7 +436,18 @@ pub(super) fn run(
                         return Ok(false);
                     }
                     capture_window(&ui, &output.join(&capture.screenshot))?;
-                    let capture = pending.take().unwrap().0;
+                    let mut capture = pending.take().unwrap().0;
+                    if scenario == 4 {
+                        capture.checks.push(check(
+                            "プレビューの字幕本文",
+                            "実況字幕 1",
+                            ui.get_preview_caption(),
+                        ));
+                    }
+                    let failed = capture
+                        .checks
+                        .iter()
+                        .any(|check| check.expected != check.actual);
                     report.scenarios[scenario].steps.push(capture);
                     step += 1;
                     if failed || step == specs[scenario].stages.len() {

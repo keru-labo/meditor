@@ -101,7 +101,7 @@ class CatalogTests(unittest.TestCase):
             "10 clips", "I select mp4 for clips", "<unknown> stays literal",
         ])
 
-    def test_binds_only_the_two_tagged_ui_cases_in_the_repo(self):
+    def test_binds_the_ui_cases_to_their_features(self):
         with tempfile.TemporaryDirectory() as temporary:
             staging = Path(temporary)
             catalog.collect_feature_sources(staging)
@@ -113,10 +113,7 @@ class CatalogTests(unittest.TestCase):
                          {file.relative_to(staging).as_posix() for file in files})
         bound = [(feature["uri"], scenario["evidence_id"])
                  for feature in features for scenario in feature["scenarios"] if scenario["evidence_id"]]
-        self.assertCountEqual(bound, [
-            (catalog.HISTORY_FEATURE, "ui-redo-after-edit"),
-            (catalog.HISTORY_FEATURE, "ui-reopen-history"),
-        ])
+        self.assertCountEqual(bound, [(uri, tag) for tag, uri in catalog.EVIDENCE_FEATURES.items()])
 
     def test_rejects_unsafe_zip_paths_symlinks_and_duplicate_entries(self):
         link = ZipInfo("docs/features/link.feature")
