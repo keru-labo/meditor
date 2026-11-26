@@ -61,6 +61,10 @@ pub struct SeekController {
 }
 
 impl SeekController {
+    pub fn is_pending(&self) -> bool {
+        self.pending.is_some()
+    }
+
     /// Registers the latest intent before dispatching it to the decoder.
     pub fn request(&mut self, position_us: u64, mode: SeekMode) -> SeekRequest {
         self.serial = self.serial.checked_add(1).expect("seek serial exhausted");

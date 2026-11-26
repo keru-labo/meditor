@@ -1,0 +1,7 @@
+export struct UiReportPoint { x: float, y: float }
+
+export global UiReportGeometry {
+    public pure function center(origin: { x: length, y: length }, width: length, height: length) -> UiReportPoint {
+        return { x: (origin.x + width / 2) / 1px, y: (origin.y + height / 2) / 1px };
+    }
+}

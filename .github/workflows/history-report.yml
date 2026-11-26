@@ -56,6 +56,7 @@ jobs:
             const catalogue = await findArtifact(`meditor-bdd-catalogue-${attempt}`, 4 * 1024 * 1024);
             if (!catalogue) return;
             const evidence = await findArtifact(`meditor-bdd-ui-evidence-${attempt}`, 16 * 1024 * 1024);
+            const editor = await findArtifact(`meditor-editor-ui-evidence-${attempt}`, 16 * 1024 * 1024);
             const { data: pulls } = await github.rest.pulls.list({
               owner, repo, state: 'open', head: `${owner}:${run.head_branch}`, per_page: 100,
             });
@@ -67,6 +68,7 @@ jobs:
             core.setOutput('sha', run.head_sha);
             core.setOutput('catalogue', catalogue);
             if (evidence) core.setOutput('evidence', evidence);
+            if (editor) core.setOutput('editor', editor);
       - name: Set up the trusted report parser
         if: steps.report.outputs.pr != ''
         run: |
@@ -80,6 +82,7 @@ jobs:
           SHA: ${{ steps.report.outputs.sha }}
           CATALOGUE: ${{ steps.report.outputs.catalogue }}
           EVIDENCE: ${{ steps.report.outputs.evidence }}
+          EDITOR: ${{ steps.report.outputs.editor }}
         run: |
           branch=ci/history-reports
           work="$RUNNER_TEMP/history-site"
@@ -89,6 +92,10 @@ jobs:
           if [ -n "$EVIDENCE" ]; then
             gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$EVIDENCE/zip" > "$RUNNER_TEMP/history-report.zip"
             evidence=(--evidence "$RUNNER_TEMP/history-report.zip")
+          fi
+          if [ -n "$EDITOR" ]; then
+            gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$EDITOR/zip" > "$RUNNER_TEMP/editor-report.zip"
+            evidence+=(--editor-evidence "$RUNNER_TEMP/editor-report.zip")
           fi
           git init --initial-branch="$branch" "$work"
           git -C "$work" remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"

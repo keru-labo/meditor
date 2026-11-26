@@ -1,5 +1,6 @@
-//! Exercise the editor's UI callbacks and record visible BDD outcomes.
+//! Dispatch pointer and keyboard events to the editor and record visible BDD outcomes.
 
+use super::editor_dialogs::DialogAnswer;
 use super::{Editor, EditorWindow, Loaded, Project, TICK, capture_window};
 use anyhow::{Result, ensure};
 use serde::Serialize;
@@ -12,6 +13,10 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[path = "editor_controls_report.rs"]
+mod editor_controls;
+#[path = "ui_report_input.rs"]
+mod input;
 #[path = "history_report_spec.rs"]
 mod spec;
 
@@ -26,6 +31,7 @@ const ENABLED: &str = "有効";
 const DISABLED: &str = "無効";
 #[derive(Serialize)]
 struct Report {
+    input_method: &'static str,
     scenarios: Vec<Scenario>,
 }
 
@@ -76,16 +82,15 @@ fn caption(ui: &EditorWindow) -> String {
         .map_or_else(String::new, |row| row.body.to_string())
 }
 
-fn edit_caption(ui: &EditorWindow) {
-    ui.invoke_select_caption(0);
-    ui.set_caption_text(CAPTION.into());
-    ui.invoke_update_caption();
+fn edit_caption(ui: &EditorWindow) -> Result<()> {
+    input::click(ui, "caption-first")?;
+    input::replace(ui, "caption-body", CAPTION)
 }
 
-fn edit_clip(ui: &EditorWindow) {
-    ui.set_clip_start("0".into());
-    ui.set_clip_end("9".into());
-    ui.invoke_update_clip();
+fn edit_clip(ui: &EditorWindow) -> Result<()> {
+    input::replace(ui, "clip-start", "0")?;
+    input::replace(ui, "clip-end", "9")?;
+    input::click(ui, "clip-apply")
 }
 
 fn open_project(
@@ -96,7 +101,37 @@ fn open_project(
 ) -> Result<()> {
     let loaded = Loaded::open(Project::load(source)?, destination.to_path_buf())?;
     editor.borrow_mut().install(ui, loaded);
-    ui.invoke_select_caption(0);
+    Ok(())
+}
+
+fn reopen_project(ui: &EditorWindow, editor: &RefCell<Editor>, path: &Path) -> Result<()> {
+    let result = click_with_files(
+        ui,
+        editor,
+        "open",
+        [DialogAnswer::File(Some(path.to_owned()))],
+    );
+    result?;
+    ensure!(
+        ui.get_status() == "音声 3 トラック",
+        "保存したプロジェクトを開けませんでした: {}",
+        ui.get_status()
+    );
+    Ok(())
+}
+
+fn click_with_files(
+    ui: &EditorWindow,
+    editor: &RefCell<Editor>,
+    target: &str,
+    answers: impl IntoIterator<Item = DialogAnswer>,
+) -> Result<()> {
+    editor.borrow_mut().dialogs.supply(answers);
+    let clicked = input::click(ui, target);
+    let consumed = editor.borrow().dialogs.consumed();
+    editor.borrow_mut().dialogs.supply([]);
+    clicked?;
+    ensure!(consumed, "ファイル選択まで実行されませんでした: {target}");
     Ok(())
 }
 
@@ -111,7 +146,7 @@ fn perform(
     let (action, operations, rationale, checks): (_, &[_], _, _) = match (scenario, step) {
         (0, 0) => {
             open_project(ui, editor, source, destination)?;
-            edit_clip(ui);
+            edit_clip(ui)?;
             (
                 "素材区間を0〜9秒に変更する",
                 &[OPEN_SAMPLE, ENTER_CLIP_RANGE],
@@ -120,7 +155,7 @@ fn perform(
             )
         }
         (0, 1) => {
-            ui.invoke_undo_edit();
+            input::click(ui, "undo")?;
             (
                 "区間変更を元に戻す",
                 &[UNDO],
@@ -136,7 +171,7 @@ fn perform(
             )
         }
         (0, 2) => {
-            edit_caption(ui);
+            edit_caption(ui)?;
             (
                 "別の編集として字幕本文を変更する",
                 &[EDIT_FIRST_CAPTION],
@@ -153,8 +188,8 @@ fn perform(
         }
         (1, 0) => {
             open_project(ui, editor, source, destination)?;
-            edit_caption(ui);
-            edit_clip(ui);
+            edit_caption(ui)?;
+            edit_clip(ui)?;
             (
                 "字幕と素材区間を順に変更する",
                 &[OPEN_SAMPLE, EDIT_FIRST_CAPTION, ENTER_CLIP_RANGE],
@@ -166,8 +201,8 @@ fn perform(
             )
         }
         (1, 1) => {
-            ui.invoke_undo_edit();
-            ui.invoke_save_project();
+            input::click(ui, "undo")?;
+            input::click(ui, "save")?;
             (
                 "区間変更だけを元に戻して保存する",
                 &[UNDO, "ツールバーの「保存」を押す"],
@@ -183,7 +218,7 @@ fn perform(
             )
         }
         (1, 2) => {
-            open_project(ui, editor, destination, destination)?;
+            reopen_project(ui, editor, destination)?;
             (
                 "保存したプロジェクトを開き直す",
                 &["直前に保存した fixture.json を再度開く"],
@@ -205,7 +240,7 @@ fn perform(
             )
         }
         (1, 3) => {
-            ui.invoke_redo_edit();
+            input::click(ui, "redo")?;
             (
                 "区間変更をやり直す",
                 &["ツールバーの「やり直す」を押す"],
@@ -243,8 +278,8 @@ fn perform(
             )
         }
         (2, 1) => {
-            ui.set_clip_start("32".into());
-            ui.invoke_update_clip();
+            input::replace(ui, "clip-start", "32")?;
+            input::click(ui, "clip-apply")?;
             (
                 "クリップの開始を32秒に変更する",
                 &["開始に「32」を入力して「区間を適用」を押す"],
@@ -253,9 +288,9 @@ fn perform(
             )
         }
         (2, 2) => {
-            ui.invoke_save_project();
+            input::click(ui, "save")?;
             let saved = ui.get_status();
-            open_project(ui, editor, destination, destination)?;
+            reopen_project(ui, editor, destination)?;
             let mut checks = clip_timing(ui, "32.000000 – 40.000000 秒", "00:00.000  /  00:08.000");
             checks.push(check("保存結果", "プロジェクトを保存しました", saved));
             (
@@ -266,8 +301,8 @@ fn perform(
             )
         }
         (3, 1) => {
-            ui.set_clip_end("38".into());
-            ui.invoke_update_clip();
+            input::replace(ui, "clip-end", "38")?;
+            input::click(ui, "clip-apply")?;
             (
                 "クリップの終了を38秒に変更する",
                 &["終了に「38」を入力して「区間を適用」を押す"],
@@ -285,16 +320,16 @@ fn perform(
             )
         }
         (4, 1) => {
-            let mut style = ui.get_subtitle_style_draft();
-            style.text_color = "#FFFF00".into();
-            style.outline_color = "#0044FF".into();
-            style.outline_width = 8;
-            let accepted = ui.invoke_update_subtitle_style(style);
+            input::click(ui, "subtitle-style")?;
+            input::replace(ui, "style-fill", "#FFFF00")?;
+            input::replace(ui, "style-outline", "#0044FF")?;
+            input::replace(ui, "style-thickness", "8")?;
+            input::click(ui, "style-apply")?;
             let mut checks = subtitle_appearance(ui, "#FFFF00", "#0044FF", "8");
             checks.push(check(
                 "設定の適用",
-                "成功",
-                if accepted { "成功" } else { "失敗" },
+                "字幕スタイルを更新しました",
+                ui.get_status(),
             ));
             (
                 "黄色の文字と太い青の縁取りを適用する",
@@ -304,7 +339,7 @@ fn perform(
             )
         }
         (4, 2) => {
-            ui.invoke_undo_edit();
+            input::click(ui, "undo")?;
             (
                 "字幕スタイルを一度で元に戻す",
                 &[UNDO],
@@ -314,12 +349,13 @@ fn perform(
         }
         (5..=8, 1) => {
             let (_, control, input) = spec::INVALID_CLIP_INPUTS[scenario - 5];
-            if control == "開始" {
-                ui.set_clip_start(input.into());
+            let field = if control == "開始" {
+                "clip-start"
             } else {
-                ui.set_clip_end(input.into());
-            }
-            ui.invoke_update_clip();
+                "clip-end"
+            };
+            input::replace(ui, field, input)?;
+            input::click(ui, "clip-apply")?;
             let range = editor.borrow().loaded.as_ref().unwrap().range();
             let actual = format!(
                 "{} – {} 秒",
@@ -393,11 +429,25 @@ pub(super) fn run(
     source: PathBuf,
     output: PathBuf,
 ) -> Result<()> {
+    editor.borrow_mut().dialogs.supply([]);
     fs::create_dir_all(&output)?;
     let workspace = tempfile::tempdir()?;
     let destination = workspace.path().join("fixture.json");
     let mut specs = spec::load()?;
+    let bdd_scenarios = specs.len();
+    specs.extend(
+        editor_controls::CASES
+            .iter()
+            .map(|&(id, name, steps)| spec::ScenarioSpec {
+                evidence_id: id,
+                name: name.to_owned(),
+                stages: (0..steps).map(|_| Vec::new()).collect(),
+            }),
+    );
+    let extra_output = output.join("editor");
+    fs::create_dir_all(&extra_output)?;
     let mut report = Report {
+        input_method: "window-events",
         scenarios: specs
             .iter()
             .map(|spec| Scenario {
@@ -411,7 +461,7 @@ pub(super) fn run(
     let mut step = 0;
     let mut pending: Option<(Step, Instant)> = None;
     let error = Rc::new(RefCell::new(None));
-    let deadline = Instant::now() + Duration::from_secs(40);
+    let deadline = Instant::now() + Duration::from_secs(85);
     let timer = Timer::default();
     {
         let window = ui.as_weak();
@@ -424,19 +474,60 @@ pub(super) fn run(
                     Instant::now() < deadline,
                     "履歴の画面検査がタイムアウトしました"
                 );
-                editor.borrow_mut().tick(&ui)?;
+                {
+                    let mut editor = editor.borrow_mut();
+                    editor.poll_export(&ui);
+                    editor.tick(&ui)?;
+                    if let Err(error) = editor.poll_chat(&ui) {
+                        ui.set_ai_status(format!("{error:#}").into());
+                    }
+                }
                 if let Some((capture, ready_at)) = pending.as_ref() {
                     let failed = capture
                         .checks
                         .iter()
                         .any(|check| check.expected != check.actual);
+                    let editor_pending = {
+                        let editor = editor.borrow();
+                        editor.last_frame.is_none() || editor.seek.is_pending()
+                    };
+                    let operation_pending = scenario >= bdd_scenarios
+                        && editor_controls::awaiting(
+                            &editor.borrow(),
+                            scenario - bdd_scenarios,
+                            step,
+                        );
                     if Instant::now() < *ready_at
-                        || (!failed && editor.borrow().last_frame.is_none())
+                        || (!failed
+                            && (editor_pending || operation_pending)
+                            && Instant::now() < *ready_at + Duration::from_secs(12))
                     {
                         return Ok(false);
                     }
-                    capture_window(&ui, &output.join(&capture.screenshot))?;
+                    let directory = if scenario < bdd_scenarios {
+                        &output
+                    } else {
+                        &extra_output
+                    };
+                    capture_window(&ui, &directory.join(&capture.screenshot))?;
                     let mut capture = pending.take().unwrap().0;
+                    if !failed && editor_pending {
+                        capture.checks.push(check(
+                            "新しいプレビューフレーム",
+                            "準備完了",
+                            "時間切れ",
+                        ));
+                    }
+                    if scenario >= bdd_scenarios {
+                        editor_controls::observe(
+                            &ui,
+                            &editor.borrow(),
+                            &destination,
+                            scenario - bdd_scenarios,
+                            step,
+                            &mut capture,
+                        );
+                    }
                     if scenario == 4 {
                         capture.checks.push(check(
                             "プレビューの字幕本文",
@@ -451,16 +542,28 @@ pub(super) fn run(
                     report.scenarios[scenario].steps.push(capture);
                     step += 1;
                     if failed || step == specs[scenario].stages.len() {
+                        ui.invoke_report_reset_panels();
+                        let mut editor = editor.borrow_mut();
+                        editor.dialogs.supply([]);
+                        editor.leaving = None;
+                        editor.report_ai = None;
                         scenario += 1;
                         step = 0;
                     }
                     if scenario == report.scenarios.len() {
-                        let file = fs::File::create(output.join("report.json"))?;
-                        serde_json::to_writer_pretty(file, &report)?;
+                        let extra = Report {
+                            input_method: report.input_method,
+                            scenarios: report.scenarios.split_off(bdd_scenarios),
+                        };
+                        for (directory, contents) in [(&output, &report), (&extra_output, &extra)] {
+                            let file = fs::File::create(directory.join("report.json"))?;
+                            serde_json::to_writer_pretty(file, &contents)?;
+                        }
                         ensure!(
                             report
                                 .scenarios
                                 .iter()
+                                .chain(&extra.scenarios)
                                 .flat_map(|scenario| &scenario.steps)
                                 .flat_map(|step| &step.checks)
                                 .all(|check| check.expected == check.actual),
@@ -470,22 +573,37 @@ pub(super) fn run(
                     }
                     return Ok(false);
                 }
-                let mut capture = perform(&ui, &editor, &source, &destination, scenario, step)
-                    .unwrap_or_else(|error| {
-                        eprintln!(
-                            "{} の操作 {}: {error:#}",
-                            report.scenarios[scenario].name,
-                            step + 1
-                        );
-                        Step {
-                            action: "プロジェクトを開く",
-                            operations: &["シナリオで使うプロジェクトを読み込む"],
-                            rationale: "プロジェクトが開ければ、編集前の状態を画面で確認できる。",
-                            checks: vec![check("プロジェクトの読み込み", "成功", "失敗")],
-                            screenshot: format!("{}-{}.png", scenario + 1, step + 1),
-                            spec: Vec::new(),
-                        }
-                    });
+                let operation = if scenario < bdd_scenarios {
+                    perform(&ui, &editor, &source, &destination, scenario, step)
+                } else {
+                    editor_controls::execute(
+                        &ui,
+                        &editor,
+                        &source,
+                        &destination,
+                        scenario - bdd_scenarios,
+                        step,
+                    )
+                };
+                let mut capture = operation.unwrap_or_else(|error| {
+                    eprintln!(
+                        "{} の操作 {}: {error:#}",
+                        report.scenarios[scenario].name,
+                        step + 1
+                    );
+                    Step {
+                        action: "画面操作を実行する",
+                        operations: &[],
+                        rationale: "操作の実行中に検査が中断されました。",
+                        checks: vec![check("画面操作", "成功", error.to_string())],
+                        screenshot: format!("{}-{}.png", scenario + 1, step + 1),
+                        spec: Vec::new(),
+                    }
+                });
+                if scenario >= bdd_scenarios {
+                    capture.screenshot =
+                        format!("editor-{}-{}.png", scenario - bdd_scenarios + 1, step + 1);
+                }
                 capture.spec = std::mem::take(&mut specs[scenario].stages[step]);
                 pending = Some((capture, Instant::now() + Duration::from_millis(180)));
                 Ok(false)
