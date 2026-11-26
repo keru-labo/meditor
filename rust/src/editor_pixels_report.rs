@@ -55,23 +55,33 @@ pub(super) fn execute(
                 ],
             )
         }
-        2 => {
+        2 | 3 => {
             input::click(ui, "export")?;
             input::click(ui, "export-canvas")?;
             input::key(ui, Key::UpArrow)?;
             input::key(ui, Key::UpArrow)?;
             input::key(ui, Key::Return)?;
-            let path = destination.with_file_name("subtitle-pixels-export.mp4");
+            let path = destination.with_file_name(export_file(stage));
             super::super::click_with_files(
                 ui,
                 editor,
                 "export-save",
                 [DialogAnswer::File(Some(path))],
             )?;
-            (
-                "字幕を焼き込んだMP4を保存する",
-                &["元の映像に合わせるを選び、書き出す"],
-            )
+            ensure!(ui.get_exporting(), "書き出しが始まりませんでした");
+            if stage == 2 {
+                input::click(ui, "caption-first")?;
+                input::replace(ui, "caption-body", "この字幕は次の動画に表示します")?;
+                (
+                    "書き出しを開始してから字幕を編集する",
+                    &["元の字幕でMP4への出力を開始し、1行目を長い字幕に変更する"],
+                )
+            } else {
+                (
+                    "編集後の字幕で2本目を書き出す",
+                    &["編集した状態から、別のMP4に出力する"],
+                )
+            }
         }
         _ => anyhow::bail!("Unknown pixel inspection stage {stage}"),
     };
@@ -83,6 +93,14 @@ pub(super) fn execute(
         screenshot: String::new(),
         spec: Vec::new(),
     })
+}
+
+fn export_file(stage: usize) -> &'static str {
+    if stage == 2 {
+        "subtitle-pixels-export.mp4"
+    } else {
+        "subtitle-pixels-after-edit.mp4"
+    }
 }
 
 fn rgb(pixel: [u8; 3]) -> Option<&'static str> {
@@ -108,7 +126,7 @@ fn inspect_region(
     ys: std::ops::Range<usize>,
     pixel: impl Fn(usize, usize) -> [u8; 3],
     styled: bool,
-) -> ([usize; 2], bool) {
+) -> ([usize; 2], bool, usize) {
     let mut glyph_bounds = None::<(usize, usize, usize, usize)>;
     let mut colors = [0; 2];
     for y in ys {
@@ -137,7 +155,7 @@ fn inspect_region(
         }
     }
     let Some((left, top, right, bottom)) = glyph_bounds else {
-        return (colors, false);
+        return (colors, false, 0);
     };
     let area = (right - left + 1) * (bottom - top + 1);
     let mut remaining = [0; 2];
@@ -172,6 +190,7 @@ fn inspect_region(
     (
         colors,
         no_backdrop && remaining.iter().all(|&pixels| pixels > area / 40),
+        right - left + 1,
     )
 }
 
@@ -185,10 +204,10 @@ pub(super) fn observe(
     stage: usize,
     step: &mut Step,
 ) -> Result<()> {
-    if stage == 2 {
+    if stage >= 2 {
         let decoded = Command::new("ffmpeg")
             .args(["-v", "error", "-i"])
-            .arg(destination.with_file_name("subtitle-pixels-export.mp4"))
+            .arg(destination.with_file_name(export_file(stage)))
             .args([
                 "-frames:v",
                 "1",
@@ -211,10 +230,10 @@ pub(super) fn observe(
                 decoded.stdout[i + 2],
             ]
         };
-        let (colors, background) = if good {
+        let (colors, background, glyph_width) = if good {
             inspect_region(165..475, 235..360, pixel, true)
         } else {
-            ([0; 2], false)
+            ([0; 2], false, 0)
         };
         step.checks.extend([
             check(
@@ -233,6 +252,30 @@ pub(super) fn observe(
                 yes(background),
             ),
         ]);
+        let original_export = stage == 2;
+        let expected_shape = if original_export {
+            glyph_width < 150
+        } else {
+            glyph_width > 180
+        };
+        step.checks.extend([
+            check(
+                "編集後の字幕がエディターに残る",
+                "はい",
+                yes(ui
+                    .get_preview_caption()
+                    .contains("この字幕は次の動画に表示します")),
+            ),
+            check(
+                if original_export {
+                    "進行中のMP4は元の短い字幕の画素を保持"
+                } else {
+                    "2本目のMP4に変更後の長い字幕が表示される"
+                },
+                "はい",
+                yes(expected_shape),
+            ),
+        ]);
         return Ok(());
     }
     let shot = ui.window().take_snapshot()?;
@@ -245,7 +288,7 @@ pub(super) fn observe(
         let p = shot.as_slice()[(y * height / 740) * width + x * width / 1180];
         [p.r, p.g, p.b]
     };
-    let (colors, background) = inspect_region(220..495, 370..495, pixel, stage == 1);
+    let (colors, background, _) = inspect_region(220..495, 370..495, pixel, stage == 1);
     step.checks.extend([
         check(
             "プレビューの字幕には本文だけがある",

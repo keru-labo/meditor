@@ -148,6 +148,7 @@ class HistoryReportTest(unittest.TestCase):
         self.assertIn("クリックとキー入力", section)
         self.assertIn("editor-1-1.png", section)
         self.assertIn(f"{len(self.cases)} シナリオ · UI操作 {len(counts)} 件", markup)
+        self.assertIn("href='#scenario-editor-subtitle-pixels'>関連するUI検査", markup)
 
 
 if __name__ == "__main__":

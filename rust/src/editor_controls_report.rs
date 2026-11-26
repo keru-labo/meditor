@@ -27,7 +27,7 @@ pub(super) const CASES: [(&str, &str, usize); 11] = [
     (
         "editor-subtitle-pixels",
         "字幕と縁取りをプレビューとMP4の画素で確認する",
-        3,
+        4,
     ),
 ];
 
@@ -1060,7 +1060,7 @@ fn duration_in(metadata: Option<&serde_json::Value>, low: f64, high: f64) -> boo
 pub(super) fn awaiting(editor: &Editor, scenario: usize, stage: usize) -> bool {
     match (scenario, stage) {
         (1, 0) => editor.position == 0,
-        (6, 2 | 4 | 7) | (8, 5) | (10, 2) => editor.export_result.is_some(),
+        (6, 2 | 4 | 7) | (8, 5) | (10, 2 | 3) => editor.export_result.is_some(),
         (7, 2 | 3) => editor.transcription.is_some(),
         (8, 2 | 8) | (9, 0..=2 | 5 | 7) => editor.chat.is_running(),
         _ => false,

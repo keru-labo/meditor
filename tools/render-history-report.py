@@ -39,7 +39,7 @@ EDITOR_CASES = {
     "editor-transcription": ("ローカル文字起こしの開始・中止・保存", 4),
     "editor-ai": ("合成AI応答の適用・設定確認・中断", 9),
     "editor-ai-errors": ("AIの該当なし・無効応答・失敗の表示", 8),
-    "editor-subtitle-pixels": ("字幕と縁取りをプレビューとMP4の画素で確認する", 3),
+    "editor-subtitle-pixels": ("字幕と縁取りをプレビューとMP4の画素で確認する", 4),
 }
 EDITOR_SCOPES = {
     "editor-ai-errors": "エラーを返す合成応答で、アプリによる表示と編集内容の保持を確認します。",
@@ -218,6 +218,15 @@ def render(catalogue, evidence, pr, sha, run):
             feature_context = f"{feature_name} / {html.escape(rule)}" if rule else feature_name
             description = case["description"]
             description_note = f"<p class='description'>{html.escape(description)}</p>" if description else ""
+            related = [
+                tag.removeprefix("@report-") for tag in case.get("tags", [])
+                if tag.startswith("@report-")
+            ]
+            related_links = "".join(
+                f"<p class='source'><a href='#scenario-{case_id}'>関連するUI検査 · "
+                f"{html.escape(EDITOR_CASES[case_id][0])}</a></p>"
+                for case_id in related if case_id in EDITOR_CASES and case_id in evidence
+            )
             captures = evidence.get(case["id"])
             authored = bool(case["steps"])
             image_count = len(captures.stages) if captures else 0
@@ -268,7 +277,7 @@ def render(catalogue, evidence, pr, sha, run):
                 f"<p class='feature-path'>{feature_context}</p>"
                 f"<h2 id='{scenario_id}-title' tabindex='-1'>{name}</h2>"
                 f"<p class='scenario-meta'><strong class='{state}'>{status}</strong>{screenshot_note}{spec_link}</p>"
-                f"{results}{specification}</section>"
+                f"{related_links}{results}{specification}</section>"
             )
         groups.append(
             f"<div class='feature-group'><h3>{feature_name}</h3>{''.join(links)}</div>"
