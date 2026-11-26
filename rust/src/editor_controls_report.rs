@@ -1,25 +1,49 @@
 use super::{
     DialogAnswer, Editor, EditorWindow, Step, check, clip, edit_clip, input, open_project,
 };
+use crate::{ClipRange, ReportAi};
 use anyhow::{Result, ensure};
 use slint::{ComponentHandle, Model, platform::Key};
 use std::{cell::RefCell, fs, path::Path};
 
-pub(super) const CASES: [(&str, &str, usize); 9] = [
+#[path = "editor_pixels_report.rs"]
+mod pixels;
+
+pub(super) const CASES: [(&str, &str, usize); 11] = [
     ("editor-project", "プロジェクト作成と未保存時の確認", 7),
     ("editor-playback", "再生・一時停止・シーク", 6),
     ("editor-captions", "SRTの取り込みと字幕一覧の操作", 6),
     ("editor-panels", "アプリ情報・AI・書き出し設定の開閉", 6),
     ("editor-proxy", "プロキシの選択と切り替え", 3),
     ("editor-metrics", "計測の開始・停止・保存", 3),
-    ("editor-export", "書き出し設定の選択とMP4保存", 6),
+    ("editor-export", "書き出し設定の選択とMP4保存", 8),
     (
         "editor-transcription",
         "ローカル文字起こしの開始・中止・保存",
         4,
     ),
-    ("editor-ai", "合成AI応答の適用・設定確認・中断", 7),
+    ("editor-ai", "合成AI応答の適用・設定確認・中断", 9),
+    ("editor-ai-errors", "AIの該当なし・無効応答・失敗の表示", 8),
+    (
+        "editor-subtitle-pixels",
+        "字幕と縁取りをプレビューとMP4の画素で確認する",
+        3,
+    ),
 ];
+
+fn choose_export_options(ui: &EditorWindow, quality: usize, canvas: usize) -> Result<()> {
+    for (target, index) in [("export-quality", quality), ("export-canvas", canvas)] {
+        input::click(ui, target)?;
+        for _ in 0..2 {
+            input::key(ui, Key::UpArrow)?;
+        }
+        for _ in 0..index {
+            input::key(ui, Key::DownArrow)?;
+        }
+        input::key(ui, Key::Return)?;
+    }
+    Ok(())
+}
 
 fn flag(value: bool) -> &'static str {
     if value { "はい" } else { "いいえ" }
@@ -33,6 +57,9 @@ pub(super) fn execute(
     scenario: usize,
     stage: usize,
 ) -> Result<Step> {
+    if scenario == 10 {
+        return pixels::execute(ui, editor, destination, stage);
+    }
     let (action, operations, checks): (_, &[_], _) = match (scenario, stage) {
         (0, 0) => {
             let new_project = destination.with_file_name("gui-new.json");
@@ -554,13 +581,7 @@ pub(super) fn execute(
             input::replace(ui, "clip-end", "1")?;
             input::click(ui, "clip-apply")?;
             input::click(ui, "export")?;
-            input::click(ui, "export-quality")?;
-            input::key(ui, Key::DownArrow)?;
-            input::key(ui, Key::Return)?;
-            input::click(ui, "export-canvas")?;
-            input::key(ui, Key::DownArrow)?;
-            input::key(ui, Key::DownArrow)?;
-            input::key(ui, Key::Return)?;
+            choose_export_options(ui, 1, 2)?;
             (
                 "画質と縦長キャンバスを選ぶ",
                 &["書き出すを押し、「高画質」と「縦長 9:16」を選ぶ"],
@@ -574,15 +595,33 @@ pub(super) fn execute(
         (6, 1) => {
             let path = destination.with_file_name("ui-export.mp4");
             super::click_with_files(ui, editor, "export-save", [DialogAnswer::File(Some(path))])?;
+            let accepted = ui.get_exporting();
+            input::replace(ui, "clip-end", "2")?;
+            input::click(ui, "clip-apply")?;
+
             (
                 "MP4の保存先を指定する",
-                &["保存先を選ぶボタンを押し、保存先を指定する"],
+                &[
+                    "保存先を選ぶボタンを押し、保存先を指定する",
+                    "書き出し中に終了時刻を2秒へ変更する",
+                ],
                 vec![
-                    check("書き出しを開始した", "はい", flag(ui.get_exporting())),
+                    check("書き出しを開始した", "はい", flag(accepted)),
                     check(
                         "高画質と縦長が書き出しに渡る",
                         "はい",
                         flag(editor.borrow().report_export_selection == Some((1, 2))),
+                    ),
+                    check(
+                        "編集画面の新しい素材区間",
+                        "2000000",
+                        editor
+                            .borrow()
+                            .loaded
+                            .as_ref()
+                            .map(|project| project.range().duration())
+                            .unwrap_or_default()
+                            .to_string(),
                     ),
                 ],
             )
@@ -617,18 +656,50 @@ pub(super) fn execute(
             Vec::new(),
         ),
         (6, 5) => {
-            input::replace(ui, "clip-end", "2")?;
+            input::replace(ui, "clip-end", "3")?;
             input::click(ui, "clip-apply")?;
             (
                 "書き出し失敗後も編集を続ける",
-                &["終了を2秒に変え、区間を適用する"],
+                &["終了を3秒に変え、区間を適用する"],
                 vec![check(
                     "区間の変更が反映される",
-                    "0.000000 – 2.000000 秒",
-                    clip(ui),
+                    "3000000",
+                    editor
+                        .borrow()
+                        .loaded
+                        .as_ref()
+                        .map(|project| project.range().duration())
+                        .unwrap_or_default()
+                        .to_string(),
                 )],
             )
         }
+        (6, 6) => {
+            input::click(ui, "undo")?;
+            input::click(ui, "export")?;
+            choose_export_options(ui, 2, 1)?;
+            let path = destination.with_file_name("ui-retry.mp4");
+            super::click_with_files(ui, editor, "export-save", [DialogAnswer::File(Some(path))])?;
+            (
+                "別の保存先で書き出しを再試行する",
+                &[
+                    "失敗後に行った最後の編集をUndoし、書き出すを押して容量優先・横長を選び、新しい保存先を指定する",
+                ],
+                vec![
+                    check("再試行が始まった", "はい", flag(ui.get_exporting())),
+                    check(
+                        "容量優先と横長が書き出しに渡る",
+                        "はい",
+                        flag(editor.borrow().report_export_selection == Some((2, 1))),
+                    ),
+                ],
+            )
+        }
+        (6, 7) => (
+            "後から行った編集が次のMP4に反映される",
+            &["書き出し完了を待つ"],
+            Vec::new(),
+        ),
         (7, 0 | 3) => {
             if stage == 0 {
                 open_project(ui, editor, source, destination)?;
@@ -681,7 +752,7 @@ pub(super) fn execute(
             )
         }
         (8, 1) => {
-            editor.borrow_mut().report_ai_delay = Some(std::time::Duration::from_millis(800));
+            editor.borrow_mut().report_ai = Some(clip_response(800, 8, 11));
             input::replace(ui, "ai-prompt", "場面を縦長・高画質にする")?;
             input::click(ui, "ai-send")?;
             (
@@ -721,8 +792,31 @@ pub(super) fn execute(
         }
         (8, 4) => {
             super::click_with_files(ui, editor, "export-cancel", [])?;
+            input::click(ui, "ai-export")?;
+            choose_export_options(ui, 0, 1)?;
+            let path = destination.with_file_name("ui-ai-export.mp4");
+            super::click_with_files(ui, editor, "export-save", [DialogAnswer::File(Some(path))])?;
+            (
+                "AIの提案を変更して書き出す",
+                &[
+                    "一度キャンセルして設定を開き直す",
+                    "標準画質と横長を選び、保存先を指定する",
+                ],
+                vec![check(
+                    "変更した標準と横長が書き出しに渡る",
+                    "はい",
+                    flag(editor.borrow().report_export_selection == Some((0, 1))),
+                )],
+            )
+        }
+        (8, 5) => (
+            "AIが選んだ区間を変更後の設定で保存する",
+            &["出力完了を待つ"],
+            Vec::new(),
+        ),
+        (8, 6) => {
             input::click(ui, "undo")?;
-            editor.borrow_mut().report_ai_delay = Some(std::time::Duration::from_millis(1400));
+            editor.borrow_mut().report_ai = Some(clip_response(1400, 8, 11));
             input::replace(ui, "ai-prompt", "あとで中断する")?;
             input::click(ui, "ai-send")?;
             (
@@ -734,7 +828,7 @@ pub(super) fn execute(
                 ],
             )
         }
-        (8, 5) => {
+        (8, 7) => {
             input::click(ui, "ai-cancel")?;
             (
                 "処理中のAIを中断する",
@@ -746,7 +840,7 @@ pub(super) fn execute(
                 )],
             )
         }
-        (8, 6) => (
+        (8, 8) => (
             "中断後に字幕と区間を保持する",
             &["終了を待って画面を確認する"],
             vec![
@@ -758,6 +852,103 @@ pub(super) fn execute(
                 ),
             ],
         ),
+        (9, 0..=2) => {
+            if stage == 0 {
+                open_project(ui, editor, source, destination)?;
+                input::click(ui, "ai")?;
+            }
+            let (response, prompt, action) = match stage {
+                0 => (
+                    ReportAi::NoMatch,
+                    "該当しない場面を探す",
+                    "該当する区間がない場合",
+                ),
+                1 => (
+                    clip_response(0, 80, 90),
+                    "対象外の区間を確認する",
+                    "素材の範囲外の応答を拒否する",
+                ),
+                _ => (
+                    ReportAi::Error("合成応答でAI処理に失敗しました"),
+                    "処理エラーを確認する",
+                    "AI処理の失敗を表示する",
+                ),
+            };
+            editor.borrow_mut().report_ai = Some(response);
+            input::replace(ui, "ai-prompt", prompt)?;
+            input::click(ui, "ai-send")?;
+            (
+                action,
+                &["編集指示を送って応答を待つ"],
+                vec![check("処理を開始した", "はい", flag(ui.get_ai_busy()))],
+            )
+        }
+        (9, 3) => {
+            edit_clip(ui)?;
+            input::click(ui, "ai-send")?;
+            (
+                "区間設定後のプロジェクトでAI送信を止める",
+                &["区間を設定してから送信位置を押す"],
+                vec![
+                    check(
+                        "AI区間選択に使える素材",
+                        "いいえ",
+                        flag(ui.get_ai_source_available()),
+                    ),
+                    check("新しいAI処理が起動した", "いいえ", flag(ui.get_ai_busy())),
+                ],
+            )
+        }
+        (9, 4 | 6) => {
+            if stage == 4 {
+                open_project(ui, editor, source, destination)?;
+                if !ui.invoke_report_panel("ai".into()) {
+                    input::click(ui, "ai")?;
+                }
+            }
+            editor.borrow_mut().report_ai = Some(clip_response(1500, 8, 11));
+            input::replace(ui, "ai-prompt", "返答前に編集内容を変える")?;
+            input::click(ui, "ai-send")?;
+            (
+                "編集中のAIに応答待ちの状態を作る",
+                &["合成応答への送信を始める"],
+                vec![check("AI処理が始まった", "はい", flag(ui.get_ai_busy()))],
+            )
+        }
+        (9, 5) => {
+            input::click(ui, "caption-first")?;
+            input::replace(ui, "caption-body", "編集途中の字幕")?;
+            (
+                "AI応答待ちに字幕を書き換える",
+                &[
+                    "最初の字幕の本文を編集する",
+                    "待っていた応答の処理が終わるのを待つ",
+                ],
+                vec![check(
+                    "書き換えた字幕",
+                    "編集途中の字幕",
+                    super::caption(ui),
+                )],
+            )
+        }
+        (9, 7) => {
+            input::click(ui, "open")?;
+            super::click_with_files(
+                ui,
+                editor,
+                "leave-discard",
+                [DialogAnswer::File(Some(source.to_owned()))],
+            )?;
+            (
+                "AI応答待ちにプロジェクトを開き直す",
+                &["開くを押し、変更を破棄して合成プロジェクトを開く"],
+                vec![check(
+                    "開き直したプロジェクトの字幕",
+                    "実況字幕 1",
+                    super::caption(ui),
+                )],
+            )
+        }
         _ => anyhow::bail!("Unknown editor scenario {scenario} stage {stage}"),
     };
     Ok(Step {
@@ -822,12 +1013,56 @@ fn transcription_files(destination: &Path, completes: bool) -> Result<[DialogAns
     Ok([engine, model, audio, output].map(|path| DialogAnswer::File(Some(path))))
 }
 
+fn clip_response(delay_ms: u64, start: i64, end: i64) -> ReportAi {
+    ReportAi::Clip {
+        delay: std::time::Duration::from_millis(delay_ms),
+        range: ClipRange {
+            source_start_us: start * 1_000_000,
+            source_end_us: end * 1_000_000,
+        },
+    }
+}
+
+fn probe_mp4(path: &Path) -> Option<serde_json::Value> {
+    std::process::Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration:stream=codec_type,width,height",
+            "-of",
+            "json",
+        ])
+        .arg(path)
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+        .and_then(|out| serde_json::from_slice(&out.stdout).ok())
+}
+
+fn has_dimensions(metadata: Option<&serde_json::Value>, width: usize, height: usize) -> bool {
+    metadata
+        .and_then(|value| value["streams"].as_array())
+        .is_some_and(|streams| {
+            streams
+                .iter()
+                .any(|stream| stream["width"] == width && stream["height"] == height)
+        })
+}
+
+fn duration_in(metadata: Option<&serde_json::Value>, low: f64, high: f64) -> bool {
+    metadata
+        .and_then(|data| data["format"]["duration"].as_str())
+        .and_then(|duration| duration.parse::<f64>().ok())
+        .is_some_and(|duration| (low..=high).contains(&duration))
+}
+
 pub(super) fn awaiting(editor: &Editor, scenario: usize, stage: usize) -> bool {
     match (scenario, stage) {
         (1, 0) => editor.position == 0,
-        (6, 2 | 4) => editor.export_result.is_some(),
+        (6, 2 | 4 | 7) | (8, 5) | (10, 2) => editor.export_result.is_some(),
         (7, 2 | 3) => editor.transcription.is_some(),
-        (8, 2 | 6) => editor.chat.is_running(),
+        (8, 2 | 8) | (9, 0..=2 | 5 | 7) => editor.chat.is_running(),
         _ => false,
     }
 }
@@ -840,6 +1075,14 @@ pub(super) fn observe(
     stage: usize,
     capture: &mut Step,
 ) {
+    if scenario == 10 {
+        if let Err(error) = pixels::observe(ui, destination, stage, capture) {
+            capture
+                .checks
+                .push(check("画素の検査", "成功", error.to_string()));
+        }
+        return;
+    }
     match (scenario, stage) {
         (1, 0) => capture.checks.push(check(
             "先頭から再生が進んだ",
@@ -864,20 +1107,7 @@ pub(super) fn observe(
         )),
         (6, 2) => {
             let path = destination.with_file_name("ui-export.mp4");
-            let metadata = std::process::Command::new("ffprobe")
-                .args([
-                    "-v",
-                    "error",
-                    "-show_entries",
-                    "stream=codec_type,width,height",
-                    "-of",
-                    "json",
-                ])
-                .arg(path)
-                .output()
-                .ok()
-                .filter(|out| out.status.success())
-                .and_then(|out| serde_json::from_slice::<serde_json::Value>(&out.stdout).ok());
+            let metadata = probe_mp4(&path);
             let streams = metadata
                 .as_ref()
                 .and_then(|data| data["streams"].as_array());
@@ -890,6 +1120,11 @@ pub(super) fn observe(
                 streams.iter().any(|stream| stream["codec_type"] == "audio")
             });
             capture.checks.extend([
+                check(
+                    "最初のMP4は編集前の長さ約1秒",
+                    "はい",
+                    flag(duration_in(metadata.as_ref(), 0.95, 1.15)),
+                ),
                 check("縦長の寸法720×1280", "はい", flag(size_ok)),
                 check("音声ストリームを含む", "はい", flag(audio_ok)),
                 check(
@@ -907,6 +1142,21 @@ pub(super) fn observe(
             ),
             check("書き出しが終わった", "はい", flag(!ui.get_exporting())),
         ]),
+        (6, 7) => {
+            let metadata = probe_mp4(&destination.with_file_name("ui-retry.mp4"));
+            capture.checks.extend([
+                check(
+                    "再試行のMP4は書き出し中に編集した長さ約2秒",
+                    "はい",
+                    flag(duration_in(metadata.as_ref(), 1.95, 2.15)),
+                ),
+                check(
+                    "再試行の完了が表示された",
+                    "はい",
+                    flag(ui.get_status().starts_with("書き出しました:")),
+                ),
+            ]);
+        }
         (7, 2) => capture.checks.push(check(
             "中止完了の画面表示",
             "文字起こしを中止しました",
@@ -936,9 +1186,45 @@ pub(super) fn observe(
                 flag(ui.get_ai_export_ready()),
             ),
         ]),
-        (8, 6) => capture
+        (8, 5) => {
+            let metadata = probe_mp4(&destination.with_file_name("ui-ai-export.mp4"));
+            capture.checks.extend([
+                check(
+                    "AIが選んだ区間の長さ約3秒",
+                    "はい",
+                    flag(duration_in(metadata.as_ref(), 2.95, 3.15)),
+                ),
+                check(
+                    "提案から変更した横長1280×720",
+                    "はい",
+                    flag(has_dimensions(metadata.as_ref(), 1280, 720)),
+                ),
+            ]);
+        }
+        (8, 8) => capture
             .checks
             .push(check("AI処理中", "いいえ", flag(ui.get_ai_busy()))),
+        (9, 0..=2) => {
+            let expected = match stage {
+                0 => "指示に合う区間が見つかりませんでした",
+                1 => "AI が対象区間外の時刻を返しました",
+                _ => "合成応答でAI処理に失敗しました",
+            };
+            capture.checks.extend([
+                check("応答結果の画面表示", expected, ui.get_ai_status()),
+                check("素材区間が維持されている", super::ORIGINAL_RANGE, clip(ui)),
+            ]);
+        }
+        (9, 5 | 7) => {
+            capture.checks.extend([
+                check(
+                    "後から届いたAIの区間が反映されていない",
+                    super::ORIGINAL_RANGE,
+                    clip(ui),
+                ),
+                check("AI処理が終了した", "はい", flag(!ui.get_ai_busy())),
+            ]);
+        }
         _ => {}
     }
 }

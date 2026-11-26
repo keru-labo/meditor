@@ -500,7 +500,7 @@ pub(super) fn run(
                     if Instant::now() < *ready_at
                         || (!failed
                             && (editor_pending || operation_pending)
-                            && Instant::now() < *ready_at + Duration::from_secs(5))
+                            && Instant::now() < *ready_at + Duration::from_secs(12))
                     {
                         return Ok(false);
                     }
@@ -546,7 +546,7 @@ pub(super) fn run(
                         let mut editor = editor.borrow_mut();
                         editor.dialogs.supply([]);
                         editor.leaving = None;
-                        editor.report_ai_delay = None;
+                        editor.report_ai = None;
                         scenario += 1;
                         step = 0;
                     }

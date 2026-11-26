@@ -35,11 +35,14 @@ EDITOR_CASES = {
     "editor-panels": ("アプリ情報・AI・書き出し設定の開閉", 6),
     "editor-proxy": ("プロキシの選択と切り替え", 3),
     "editor-metrics": ("計測の開始・停止・保存", 3),
-    "editor-export": ("書き出し設定の選択とMP4保存", 6),
+    "editor-export": ("書き出し設定の選択とMP4保存", 8),
     "editor-transcription": ("ローカル文字起こしの開始・中止・保存", 4),
-    "editor-ai": ("合成AI応答の適用・設定確認・中断", 7),
+    "editor-ai": ("合成AI応答の適用・設定確認・中断", 9),
+    "editor-ai-errors": ("AIの該当なし・無効応答・失敗の表示", 8),
+    "editor-subtitle-pixels": ("字幕と縁取りをプレビューとMP4の画素で確認する", 3),
 }
 EDITOR_SCOPES = {
+    "editor-ai-errors": "エラーを返す合成応答で、アプリによる表示と編集内容の保持を確認します。",
     "editor-ai": "アプリ内のAI結果は合成応答で再現しています。実アカウントへの接続とモデルの回答品質は検査範囲に含みません。",
     "editor-transcription": "文字起こしエンジンはSRTを返すテスト用CLIです。実モデルの認識精度は検査範囲に含みません。",
 }

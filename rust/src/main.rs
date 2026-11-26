@@ -134,8 +134,14 @@ struct Editor {
     smoke: Option<Smoke>,
     export_result: Option<std::sync::mpsc::Receiver<Result<PathBuf>>>,
     dialogs: editor_dialogs::EditorDialogs,
-    report_ai_delay: Option<Duration>,
+    report_ai: Option<ReportAi>,
     report_export_selection: Option<(i32, i32)>,
+}
+
+enum ReportAi {
+    Clip { delay: Duration, range: ClipRange },
+    NoMatch,
+    Error(&'static str),
 }
 
 struct TranscriptionJob {
@@ -1121,20 +1127,22 @@ impl Editor {
             captions: loaded.project.captions.clone(),
             clip_draft: clip_draft(ui),
         };
-        let report_ai_delay = self.report_ai_delay.take();
+        let report_ai = self.report_ai.take();
         ensure!(
-            !self.dialogs.scripted() || report_ai_delay.is_some(),
+            !self.dialogs.scripted() || report_ai.is_some(),
             "画面検査用のAI応答がありません"
         );
         self.chat.start(input, move |input, cancelled| {
-            if let Some(delay) = report_ai_delay {
+            if let Some(response) = report_ai {
+                let (delay, range) = match response {
+                    ReportAi::Clip { delay, range } => (delay, range),
+                    ReportAi::NoMatch => return Ok(None),
+                    ReportAi::Error(message) => anyhow::bail!(message),
+                };
                 // The simulated service can finish even after the editor cancels.
                 std::thread::sleep(delay);
                 return Ok(Some(meditor_playback::ai::ClipSelection {
-                    range: ClipRange {
-                        source_start_us: 8_000_000,
-                        source_end_us: 11_000_000,
-                    },
+                    range,
                     export: Some(meditor_playback::ai::ExportPreferences {
                         quality: Some(meditor_playback::ai::ExportQuality::High),
                         canvas: Some(meditor_playback::ai::ExportCanvas::Portrait),
