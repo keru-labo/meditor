@@ -174,11 +174,17 @@ def render(catalogue, evidence, pr, sha, run):
             description = case["description"]
             description_note = f"<p class='description'>{html.escape(description)}</p>" if description else ""
             captures = evidence.get(case["id"])
+            image_count = len(captures.stages) if captures else 0
+            spec_id = f"{scenario_id}-spec"
             status, state = ("計画中", "neutral") if case["planned"] else ("画面の実行結果なし", "neutral")
             results = ""
+            spec_link = ""
+            screenshot_note = " · スクリーンショットなし"
             if captures:
                 status, state = ("失敗", "fail") if captures.failed else ("成功", "pass")
                 (failures if captures.failed else verified).append(scenario_id)
+                screenshot_note = f" · 画像 {image_count} 枚"
+                spec_link = f" <a href='#{spec_id}'>Gherkinの手順へ</a>"
                 results = (
                     "<h3 class='flow-title'>画面検査の操作と結果</h3>"
                     + timeline(captures.stages, "画面検査の操作と結果", f"{scenario_id}-stage")
@@ -189,18 +195,19 @@ def render(catalogue, evidence, pr, sha, run):
                 values = "、".join(f"{key} = {value}" for key, value in example["values"])
                 example_note = f"<p class='source'>例 {example['line']}行目 · {html.escape(values)}</p>"
             links.append(
-                f"<a href='#{scenario_id}'><span>{name}</span>"
+                f"<a href='#{scenario_id}' data-images='{image_count}'><span>{name}</span>"
                 f"<small class='{state}'>{status} · {len(case['steps'])} ステップ"
-                + (f" · 例 {example['line']}行目" if example else "") + "</small></a>"
+                + screenshot_note + (f" · 例 {example['line']}行目" if example else "") + "</small></a>"
             )
             panels.append(
                 f"<section id='{scenario_id}' aria-labelledby='{scenario_id}-title'>"
                 f"<p class='feature-path'>{feature_context}</p>"
                 f"<h2 id='{scenario_id}-title' tabindex='-1'>{name}</h2>"
-                f"<p class='scenario-meta'><strong class='{state}'>{status}</strong> <code>{source}</code></p>"
-                f"{description_note}{example_note}<h3 class='flow-title'>Gherkinの手順</h3>"
+                f"<p class='scenario-meta'><strong class='{state}'>{status}</strong>{screenshot_note}{spec_link}</p>"
+                f"{results}<h3 class='flow-title' id='{spec_id}'>Gherkinの手順</h3>"
+                f"<p class='source'><code>{source}</code></p>{description_note}{example_note}"
                 + timeline((render_spec(step) for step in case["steps"]), "Gherkinの手順", f"{scenario_id}-step")
-                + results + "</section>"
+                + "</section>"
             )
         groups.append(
             f"<div class='feature-group'><h3>{feature_name}</h3>{''.join(links)}</div>"
@@ -285,6 +292,7 @@ body:has(.scenario-drawer[open]) {{ overflow: hidden }}
   border: 1px solid var(--line); border-radius: .4rem; color: inherit; background: #fff;
 }}
 .drawer-search:focus-visible {{ outline: 2px solid var(--accent); outline-offset: 1px }}
+.drawer-filter {{ display: flex; align-items: center; gap: .4rem; margin-top: .65rem; font-size: .85rem; cursor: pointer }}
 .scenarios {{ flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: .8rem 1.1rem 1.1rem }}
 .feature-group + .feature-group {{ margin-top: 1.25rem }}
 .feature-group h3 {{ font-size: .85rem; color: var(--muted); margin: .15rem 0 .5rem }}
@@ -303,7 +311,8 @@ main section {{ scroll-margin-top: 1rem }}
 main h2 {{ font-size: clamp(1.35rem, 3vw, 2rem) }}
 .feature-path {{ margin-bottom: .25rem; font-size: .9rem }}
 .scenario-meta, .source {{ margin-top: .4rem; font-size: .86rem; overflow-wrap: anywhere }}
-.scenario-meta code {{ margin-inline-start: .35rem }}
+.scenario-meta a {{ margin-inline-start: .65rem }}
+.source + .steps, .description + .steps {{ margin-top: .8rem }}
 .description {{ margin-top: .75rem; white-space: pre-wrap; overflow-wrap: anywhere }}
 .flow-title {{ margin: 1.65rem 0 .8rem; font-size: 1.13rem }}
 .steps {{
@@ -363,6 +372,7 @@ tbody tr:last-child th, tbody tr:last-child td {{ border-bottom: 0 }}
     <div class="drawer-toolbar">
       <div class="drawer-header"><h2 id="scenarios-title">シナリオ</h2><button class="drawer-close" type="button" autofocus>閉じる</button></div>
       <input class="drawer-search" type="search" aria-label="シナリオを検索" placeholder="機能名・シナリオ名で検索">
+      <label class="drawer-filter"><input class="filter-images" type="checkbox">スクリーンショットあり</label>
     </div>
     <nav class="scenarios" aria-labelledby="scenarios-title">
       {"".join(groups)}
@@ -409,19 +419,23 @@ for (const link of links) link.addEventListener('click', event => {{
 }});
 const groups = [...drawer.querySelectorAll('.feature-group')];
 const search = drawer.querySelector('.drawer-search');
-search.addEventListener('input', () => {{
+const filterImages = drawer.querySelector('.filter-images');
+function filterScenarios() {{
   const query = search.value.trim().normalize('NFKC').toLowerCase();
   for (const group of groups) {{
     const feature = group.querySelector('h3').textContent;
     const cases = [...group.querySelectorAll('a')];
     for (const link of cases) {{
       const haystack = (feature + ' ' + link.textContent).normalize('NFKC').toLowerCase();
-      link.hidden = !haystack.includes(query);
+      link.hidden = !haystack.includes(query) || (filterImages.checked && link.dataset.images === '0');
     }}
     group.hidden = cases.every(link => link.hidden);
   }}
   drawer.querySelector('.no-matches').hidden = groups.some(group => !group.hidden);
-}});
+}}
+search.addEventListener('input', filterScenarios);
+filterImages.addEventListener('change', filterScenarios);
+addEventListener('pageshow', filterScenarios);
 const main = document.querySelector('main');
 const sections = [...main.children];
 function selectScenario() {{

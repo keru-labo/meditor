@@ -68,6 +68,7 @@ class HistoryReportTest(unittest.TestCase):
         self.assertIn("画面検査の結果 0 件", markup)
         self.assertNotIn("class='pass'", markup)
         self.assertNotIn("<img ", markup)
+        self.assertIn("スクリーンショットなし", markup)
 
     def test_only_the_two_tagged_cases_show_success_and_screenshots(self):
         evidence = self.read_evidence()
@@ -76,6 +77,13 @@ class HistoryReportTest(unittest.TestCase):
         self.assertEqual(markup.count("<img "), 7)
         self.assertEqual(markup.count("<strong class='pass'>"), 2)
         self.assertIn("なぜ成功か", markup)
+        for case in self.captured.values():
+            scenario = f"scenario-{case['id']}"
+            stages = len(evidence[case["id"]].stages)
+            self.assertIn(f"href='#{scenario}' data-images='{stages}'", markup)
+            panel = markup.split(f"<section id='{scenario}'", 1)[1].split("</section>", 1)[0]
+            self.assertLess(panel.index("<img "), panel.index(f"id='{scenario}-spec'"))
+            self.assertIn(f"href='#{scenario}-spec'", panel)
 
     def test_first_screen_failure_keeps_full_spec_and_opens_failed_case(self):
         evidence = self.read_evidence(first_failure=True)
