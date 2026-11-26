@@ -1,4 +1,4 @@
-//! Exercise the editor's UI callbacks and record visible Undo/Redo outcomes.
+//! Exercise the editor's UI callbacks and record visible BDD outcomes.
 
 use super::{Editor, EditorWindow, Loaded, Project, TICK, capture_window};
 use anyhow::{Result, ensure};
@@ -12,6 +12,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[path = "history_report_spec.rs"]
+mod spec;
+
 const CAPTION: &str = "ボス戦";
 const OPEN_SAMPLE: &str = "合成プロジェクトを開く";
 const ENTER_CLIP_RANGE: &str = "開始に「0」、終了に「9」を入力して「区間を適用」を押す";
@@ -21,11 +24,6 @@ const ORIGINAL_RANGE: &str = "0.000000 – 60.000000 秒";
 const EDITED_RANGE: &str = "0.000000 – 9.000000 秒";
 const ENABLED: &str = "有効";
 const DISABLED: &str = "無効";
-const SCENARIO_NAMES: [&str; 2] = [
-    "Undo の後の新しい編集で通常の Redo の候補を消す",
-    "保存後に開き直したプロジェクトで Undo と Redo を使う",
-];
-
 #[derive(Serialize)]
 struct Report {
     scenarios: Vec<Scenario>,
@@ -33,7 +31,8 @@ struct Report {
 
 #[derive(Serialize)]
 struct Scenario {
-    name: &'static str,
+    evidence_id: &'static str,
+    name: String,
     steps: Vec<Step>,
 }
 
@@ -41,8 +40,11 @@ struct Scenario {
 struct Step {
     action: &'static str,
     operations: &'static [&'static str],
+    rationale: &'static str,
     checks: Vec<Check>,
     screenshot: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    spec: Vec<spec::SpecStep>,
 }
 
 #[derive(Serialize)]
@@ -106,13 +108,14 @@ fn perform(
     scenario: usize,
     step: usize,
 ) -> Result<Step> {
-    let (action, operations, checks): (_, &[_], _) = match (scenario, step) {
+    let (action, operations, rationale, checks): (_, &[_], _, _) = match (scenario, step) {
         (0, 0) => {
             open_project(ui, editor, source, destination)?;
             edit_clip(ui);
             (
                 "素材区間を0〜9秒に変更する",
                 &[OPEN_SAMPLE, ENTER_CLIP_RANGE],
+                "入力した 0〜9 秒が素材区間に反映されれば、続く Undo で取り消す変更が作成されている。",
                 vec![check("素材区間", EDITED_RANGE, clip(ui))],
             )
         }
@@ -121,6 +124,7 @@ fn perform(
             (
                 "区間変更を元に戻す",
                 &[UNDO],
+                "区間が元の 0〜60 秒に戻り、Redo が有効なら、取り消した区間変更をまだ再適用できる。",
                 vec![
                     check("素材区間", ORIGINAL_RANGE, clip(ui)),
                     check(
@@ -136,6 +140,7 @@ fn perform(
             (
                 "別の編集として字幕本文を変更する",
                 &[EDIT_FIRST_CAPTION],
+                "字幕に「ボス戦」が反映され、Redo が無効なら、新しい字幕編集を適用した時点で以前の区間変更の Redo 候補が消えている。",
                 vec![
                     check("字幕一覧の本文", CAPTION, caption(ui)),
                     check(
@@ -153,6 +158,7 @@ fn perform(
             (
                 "字幕と素材区間を順に変更する",
                 &[OPEN_SAMPLE, EDIT_FIRST_CAPTION, ENTER_CLIP_RANGE],
+                "字幕が「ボス戦」で区間が 0〜9 秒なら、字幕編集と区間変更の両方が反映されている。",
                 vec![
                     check("字幕一覧の本文", CAPTION, caption(ui)),
                     check("素材区間", EDITED_RANGE, clip(ui)),
@@ -165,6 +171,7 @@ fn perform(
             (
                 "区間変更だけを元に戻して保存する",
                 &[UNDO, "ツールバーの「保存」を押す"],
+                "区間だけが元の 0〜60 秒に戻り、保存完了が表示されれば、その状態で保存できた。",
                 vec![
                     check("素材区間", ORIGINAL_RANGE, clip(ui)),
                     check(
@@ -180,6 +187,7 @@ fn perform(
             (
                 "保存したプロジェクトを開き直す",
                 &["直前に保存した fixture.json を再度開く"],
+                "字幕が「ボス戦」のままで区間が 0〜60 秒に戻っており、Undo と Redo の両方が有効なら、編集内容と両方向の履歴を復元できている。",
                 vec![
                     check("字幕一覧の本文", CAPTION, caption(ui)),
                     check("素材区間", ORIGINAL_RANGE, clip(ui)),
@@ -201,7 +209,141 @@ fn perform(
             (
                 "区間変更をやり直す",
                 &["ツールバーの「やり直す」を押す"],
+                "区間が再び 0〜9 秒になれば、保存前に取り消した区間変更を開き直したあとに再適用できている。",
                 vec![check("素材区間", EDITED_RANGE, clip(ui))],
+            )
+        }
+        (2 | 3 | 5..=8, 0) => {
+            let (start, expected, length) = if scenario < 5 {
+                (
+                    30_000_000,
+                    "30.000000 – 40.000000 秒",
+                    "00:00.000  /  00:10.000",
+                )
+            } else {
+                (
+                    32_000_000,
+                    "32.000000 – 40.000000 秒",
+                    "00:00.000  /  00:08.000",
+                )
+            };
+            let range = super::ClipRange {
+                source_start_us: start,
+                source_end_us: 40_000_000,
+            };
+            let mut project = Project::load(source)?;
+            project.set_clip(range, 60_000_000)?;
+            let loaded = Loaded::open(project, destination.to_path_buf())?;
+            editor.borrow_mut().install(ui, loaded);
+            (
+                "素材区間を設定済みのプロジェクトを開く",
+                &["素材区間を設定した合成プロジェクトを開く"],
+                "素材の開始・終了と先頭の再生位置、区間の長さで、変更前の状態を確認する。",
+                clip_timing(ui, expected, length),
+            )
+        }
+        (2, 1) => {
+            ui.set_clip_start("32".into());
+            ui.invoke_update_clip();
+            (
+                "クリップの開始を32秒に変更する",
+                &["開始に「32」を入力して「区間を適用」を押す"],
+                "素材区間の開始だけが32秒に移動し、タイムラインの長さが8秒になる。",
+                clip_timing(ui, "32.000000 – 40.000000 秒", "00:00.000  /  00:08.000"),
+            )
+        }
+        (2, 2) => {
+            ui.invoke_save_project();
+            let saved = ui.get_status();
+            open_project(ui, editor, destination, destination)?;
+            let mut checks = clip_timing(ui, "32.000000 – 40.000000 秒", "00:00.000  /  00:08.000");
+            checks.push(check("保存結果", "プロジェクトを保存しました", saved));
+            (
+                "区間の変更を保存して開き直す",
+                &["「保存」を押す", "保存したプロジェクトを開き直す"],
+                "保存完了の表示が出て、開き直しても32〜40秒の区間と8秒の長さが維持される。",
+                checks,
+            )
+        }
+        (3, 1) => {
+            ui.set_clip_end("38".into());
+            ui.invoke_update_clip();
+            (
+                "クリップの終了を38秒に変更する",
+                &["終了に「38」を入力して「区間を適用」を押す"],
+                "素材区間の開始は30秒のまま、終了が38秒になり、タイムラインの長さが8秒になる。",
+                clip_timing(ui, "30.000000 – 38.000000 秒", "00:00.000  /  00:08.000"),
+            )
+        }
+        (4, 0) => {
+            open_project(ui, editor, source, destination)?;
+            (
+                "既定の字幕をプレビューする",
+                &[OPEN_SAMPLE],
+                "字幕が表示され、文字色と縁取りが適用前の値になっている。",
+                subtitle_appearance(ui, "#FFFFFF", "#101010", "2"),
+            )
+        }
+        (4, 1) => {
+            let mut style = ui.get_subtitle_style_draft();
+            style.text_color = "#FFFF00".into();
+            style.outline_color = "#0044FF".into();
+            style.outline_width = 8;
+            let accepted = ui.invoke_update_subtitle_style(style);
+            let mut checks = subtitle_appearance(ui, "#FFFF00", "#0044FF", "8");
+            checks.push(check(
+                "設定の適用",
+                "成功",
+                if accepted { "成功" } else { "失敗" },
+            ));
+            (
+                "黄色の文字と太い青の縁取りを適用する",
+                &["字幕スタイルの文字色を黄色、縁取りを青、太さを8に設定して適用する"],
+                "設定が受理され、現在のプレビューに渡る文字色・縁取りの色・太さが更新される。",
+                checks,
+            )
+        }
+        (4, 2) => {
+            ui.invoke_undo_edit();
+            (
+                "字幕スタイルを一度で元に戻す",
+                &[UNDO],
+                "Undo を一度行うと、プレビューの文字色・縁取りの色・太さがすべて適用前に戻る。",
+                subtitle_appearance(ui, "#FFFFFF", "#101010", "2"),
+            )
+        }
+        (5..=8, 1) => {
+            let (_, control, input) = spec::INVALID_CLIP_INPUTS[scenario - 5];
+            if control == "開始" {
+                ui.set_clip_start(input.into());
+            } else {
+                ui.set_clip_end(input.into());
+            }
+            ui.invoke_update_clip();
+            let range = editor.borrow().loaded.as_ref().unwrap().range();
+            let actual = format!(
+                "{} – {} 秒",
+                super::seconds_text(range.source_start_us),
+                super::seconds_text(range.source_end_us),
+            );
+            let error = if input == "-1" {
+                "開始時刻を確認してください"
+            } else {
+                "素材内の有効な開始・終了時刻を入力してください"
+            };
+            (
+                "無効な時刻で区間を適用する",
+                &["開始または終了に例の時刻を入力し、「区間を適用」を押す"],
+                "入力エラーが表示され、適用済みの素材区間とタイムラインの長さが変更前のままである。",
+                vec![
+                    check("入力エラーの表示", error, ui.get_status()),
+                    check("適用されている素材区間", "32.000000 – 40.000000 秒", actual),
+                    check(
+                        "再生位置 ／ 区間の長さ",
+                        "00:00.000  /  00:08.000",
+                        ui.get_clock_label(),
+                    ),
+                ],
             )
         }
         _ => unreachable!(),
@@ -209,9 +351,40 @@ fn perform(
     Ok(Step {
         action,
         operations,
+        rationale,
         checks,
         screenshot: format!("{}-{}.png", scenario + 1, step + 1),
+        spec: Vec::new(),
     })
+}
+
+fn clip_timing(ui: &EditorWindow, range: &'static str, clock: &'static str) -> Vec<Check> {
+    vec![
+        check("素材区間", range, clip(ui)),
+        check("再生位置 ／ 区間の長さ", clock, ui.get_clock_label()),
+    ]
+}
+
+fn subtitle_appearance(
+    ui: &EditorWindow,
+    text: &'static str,
+    outline: &'static str,
+    width: &'static str,
+) -> Vec<Check> {
+    fn hex(color: slint::Color) -> String {
+        format!(
+            "#{:02X}{:02X}{:02X}",
+            color.red(),
+            color.green(),
+            color.blue()
+        )
+    }
+    let appearance = ui.get_caption_appearance();
+    vec![
+        check("文字色", text, hex(appearance.text_color)),
+        check("縁取りの色", outline, hex(appearance.outline_color)),
+        check("縁取りの太さ", width, appearance.outline_width.to_string()),
+    ]
 }
 
 pub(super) fn run(
@@ -223,13 +396,16 @@ pub(super) fn run(
     fs::create_dir_all(&output)?;
     let workspace = tempfile::tempdir()?;
     let destination = workspace.path().join("fixture.json");
+    let mut specs = spec::load()?;
     let mut report = Report {
-        scenarios: SCENARIO_NAMES
-            .map(|name| Scenario {
-                name,
+        scenarios: specs
+            .iter()
+            .map(|spec| Scenario {
+                evidence_id: spec.evidence_id,
+                name: spec.name.clone(),
                 steps: Vec::new(),
             })
-            .into(),
+            .collect(),
     };
     let mut scenario = 0;
     let mut step = 0;
@@ -260,10 +436,21 @@ pub(super) fn run(
                         return Ok(false);
                     }
                     capture_window(&ui, &output.join(&capture.screenshot))?;
-                    let capture = pending.take().unwrap().0;
+                    let mut capture = pending.take().unwrap().0;
+                    if scenario == 4 {
+                        capture.checks.push(check(
+                            "プレビューの字幕本文",
+                            "実況字幕 1",
+                            ui.get_preview_caption(),
+                        ));
+                    }
+                    let failed = capture
+                        .checks
+                        .iter()
+                        .any(|check| check.expected != check.actual);
                     report.scenarios[scenario].steps.push(capture);
                     step += 1;
-                    if failed || step == [3, 4][scenario] {
+                    if failed || step == specs[scenario].stages.len() {
                         scenario += 1;
                         step = 0;
                     }
@@ -283,20 +470,23 @@ pub(super) fn run(
                     }
                     return Ok(false);
                 }
-                let capture = perform(&ui, &editor, &source, &destination, scenario, step)
+                let mut capture = perform(&ui, &editor, &source, &destination, scenario, step)
                     .unwrap_or_else(|error| {
                         eprintln!(
                             "{} の操作 {}: {error:#}",
-                            SCENARIO_NAMES[scenario],
+                            report.scenarios[scenario].name,
                             step + 1
                         );
                         Step {
                             action: "プロジェクトを開く",
                             operations: &["シナリオで使うプロジェクトを読み込む"],
+                            rationale: "プロジェクトが開ければ、編集前の状態を画面で確認できる。",
                             checks: vec![check("プロジェクトの読み込み", "成功", "失敗")],
                             screenshot: format!("{}-{}.png", scenario + 1, step + 1),
+                            spec: Vec::new(),
                         }
                     });
+                capture.spec = std::mem::take(&mut specs[scenario].stages[step]);
                 pending = Some((capture, Instant::now() + Duration::from_millis(180)));
                 Ok(false)
             })();

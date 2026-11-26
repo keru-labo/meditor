@@ -34,20 +34,28 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Find the current PR run's report
+      - name: Find the current PR run's catalogue and evidence
         id: report
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const { owner, repo } = context.repo;
             const run = context.payload.workflow_run;
-            const { data: { artifacts } } = await github.rest.actions.listWorkflowRunArtifacts({
-              owner, repo, run_id: run.id, name: 'meditor-history-report',
-            });
-            if (artifacts.length === 0) return;
-            if (artifacts.length !== 1 || artifacts[0].expired || artifacts[0].size_in_bytes > 16 * 1024 * 1024) {
-              throw new Error('Expected one current history report of at most 16 MiB');
-            }
+            const findArtifact = async (name, sizeLimit) => {
+              const { data: { artifacts } } = await github.rest.actions.listWorkflowRunArtifacts({
+                owner, repo, run_id: run.id, name,
+              });
+              if (artifacts.length === 0) return;
+              if (artifacts.length !== 1 || artifacts[0].expired || artifacts[0].size_in_bytes > sizeLimit) {
+                throw new Error(`Expected one current ${name} artifact of at most ${sizeLimit} bytes`);
+              }
+              return artifacts[0].id;
+            };
+            const attempt = run.run_attempt;
+            if (!Number.isInteger(attempt) || attempt < 1) throw new Error('Invalid workflow attempt');
+            const catalogue = await findArtifact(`meditor-bdd-catalogue-${attempt}`, 4 * 1024 * 1024);
+            if (!catalogue) return;
+            const evidence = await findArtifact(`meditor-bdd-ui-evidence-${attempt}`, 16 * 1024 * 1024);
             const { data: pulls } = await github.rest.pulls.list({
               owner, repo, state: 'open', head: `${owner}:${run.head_branch}`, per_page: 100,
             });
@@ -57,19 +65,31 @@ jobs:
             if (matches.length !== 1) return;
             core.setOutput('pr', matches[0].number);
             core.setOutput('sha', run.head_sha);
-            core.setOutput('artifact', artifacts[0].id);
+            core.setOutput('catalogue', catalogue);
+            if (evidence) core.setOutput('evidence', evidence);
+      - name: Set up the trusted report parser
+        if: steps.report.outputs.pr != ''
+        run: |
+          python3 -m venv "$RUNNER_TEMP/report-venv"
+          "$RUNNER_TEMP/report-venv/bin/python" -m pip install --require-hashes --only-binary=:all: -r tools/docs-check-requirements.txt
       - name: Build the report from CI data
         if: steps.report.outputs.pr != ''
         id: build
         env:
           PR: ${{ steps.report.outputs.pr }}
           SHA: ${{ steps.report.outputs.sha }}
-          ARTIFACT: ${{ steps.report.outputs.artifact }}
+          CATALOGUE: ${{ steps.report.outputs.catalogue }}
+          EVIDENCE: ${{ steps.report.outputs.evidence }}
         run: |
           branch=ci/history-reports
           work="$RUNNER_TEMP/history-site"
-          zip="$RUNNER_TEMP/history-report.zip"
-          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT/zip" > "$zip"
+          catalogue="$RUNNER_TEMP/bdd-catalogue.zip"
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$CATALOGUE/zip" > "$catalogue"
+          evidence=()
+          if [ -n "$EVIDENCE" ]; then
+            gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$EVIDENCE/zip" > "$RUNNER_TEMP/history-report.zip"
+            evidence=(--evidence "$RUNNER_TEMP/history-report.zip")
+          fi
           git init --initial-branch="$branch" "$work"
           git -C "$work" remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
           git -C "$work" config credential.helper '!gh auth git-credential'
@@ -91,7 +111,8 @@ jobs:
             path="pr-$PR-$(openssl rand -hex 16)"
           fi
           rm -rf "$work/bdd/$path"
-          python3 tools/render-history-report.py "$zip" "$work/bdd/$path" --pr "$PR" --sha "$SHA" --run "$RUN_ID"
+          "$RUNNER_TEMP/report-venv/bin/python" tools/render-history-report.py "$catalogue" "$work/bdd/$path" \
+            --pr "$PR" --sha "$SHA" --run "$RUN_ID" "${evidence[@]}"
           printf '<!doctype html><meta charset="utf-8"><meta name="robots" content="noindex, nofollow, noarchive"><title>meditor</title>\n' > "$work/index.html"
           if [ "$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" --jq '.state + " " + .head.sha')" != "open $SHA" ]; then
             exit 0
@@ -143,7 +164,7 @@ jobs:
             if (pr.state !== 'open' || pr.head.sha !== process.env.SHA) return;
             const url = new URL(process.env.REPORT_PATH + '/', process.env.PAGES_URL.replace(/\/?$/, '/'));
             const marker = '<!-- meditor-history-report -->';
-            const body = `${marker}\n[BDDレポートを開く](${url.href}) · Undo / Redo · \`${pr.head.sha.slice(0, 12)}\``;
+            const body = `${marker}\n[BDDレポートを開く](${url.href}) · \`${pr.head.sha.slice(0, 12)}\``;
             const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number });
             const existing = comments.find(comment =>
               comment.user?.login === 'github-actions[bot]' && comment.body?.startsWith(marker)
