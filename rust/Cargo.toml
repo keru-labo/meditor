@@ -10,7 +10,7 @@ name = "meditor"
 path = "src/main.rs"
 
 [dependencies]
-anyhow = "=1.0.104"
+anyhow = "=1.0.105"
 ffmpeg-next = { version = "=9.1.0", default-features = false, features = ["codec", "format", "software-scaling"] }
 gherkin = "=0.16.0"
 hound = "=3.5.1"
